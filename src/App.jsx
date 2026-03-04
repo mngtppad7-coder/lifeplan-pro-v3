@@ -32,7 +32,7 @@ const DEFAULTS = {
   eduNursery: 30, eduElementary: 60, eduJunior: 114, eduHigh: 97, eduCollege: 103,
   period1End: BASE_YEAR+4,  // 期間1の最終年（〜この年）
   period2End: BASE_YEAR+9,  // 期間2の最終年（〜この年）
-  rent1: 120, rent2: 120, rent3: 0, rentEndYear: BASE_YEAR+10,
+  rent1: 120, rent2: 120, rent3: 0, rent4: 0, rent5: 0, rentEndYear: BASE_YEAR+10,
   // STEP3: 投資
   myNisaAnnual1: 0, myNisaAnnual2: 0, myNisaAnnual3: 0,
   myNisaStart: BASE_YEAR, myNisaEnd: BASE_YEAR+35, myNisaReturn: 5.0,
@@ -48,10 +48,11 @@ const DEFAULTS = {
   kid1NisaAnnual: 0, kid1NisaStart: BASE_YEAR+1, kid1NisaEnd: BASE_YEAR+15, kid1NisaWithdraw: BASE_YEAR+18,
   kid2NisaAnnual: 0, kid2NisaStart: BASE_YEAR+1, kid2NisaEnd: BASE_YEAR+15, kid2NisaWithdraw: BASE_YEAR+20,
   kidNisaReturn: 5.0,
-  // STEP4: 不動産
-  houseYear: 0, houseCashPrice: 0,
-  houseLoan: 0, loanRate: 1.5, loanYears: 35,
-  houseInvestWithdraw: 0, houseInvestSource: "nisa",
+  // STEP4: 不動産（複数物件対応）
+  houseCount: 0,  // 住宅変更回数（0=購入しない）
+  houses: [],     // [{year, cashPrice, loan, loanRate, loanYears, investWithdraw, investSource}]
+  // 変動係数適用
+  useIncomeCoef: true,
   // イベント・実績
   events: [], actuals: [],
 };
@@ -138,6 +139,33 @@ const Period3 = ({ values, onChange, max, step = 1, unit = "万", labels }) => (
   </div>
 );
 
+// ── 収入変動係数（FP標準値）────────────────────────────────────────
+// 出典: 年齢帯ごとの収入変動係数（ライフプランFP参考値）
+const INCOME_COEF = [
+  { maxAge: 19,  coef: 1.321 },
+  { maxAge: 24,  coef: 1.046 },
+  { maxAge: 29,  coef: 1.024 },
+  { maxAge: 34,  coef: 1.024 },
+  { maxAge: 39,  coef: 1.017 },
+  { maxAge: 44,  coef: 1.011 },
+  { maxAge: 49,  coef: 1.011 },
+  { maxAge: 54,  coef: 1.005 },
+  { maxAge: 59,  coef: 1.005 },
+  { maxAge: 64,  coef: 1.005 },
+  { maxAge: 69,  coef: 1.005 },
+  { maxAge: 999, coef: 0.883 },  // 70歳〜
+];
+
+// 基準年収から変動係数を累積適用して指定年齢の収入を計算
+function applyCoef(baseTakeHome, baseAge, targetAge) {
+  let income = baseTakeHome;
+  for (let age = baseAge; age < targetAge; age++) {
+    const entry = INCOME_COEF.find(e => age <= e.maxAge) || INCOME_COEF[INCOME_COEF.length - 1];
+    income *= entry.coef;
+  }
+  return income;
+}
+
 // ── シミュレーション ──────────────────────────────────────────────
 function simulate(p) {
   const lm = p.houseLoan > 0
@@ -158,24 +186,45 @@ function simulate(p) {
     const spouseRetired = p.hasSpouse && (p.spouseAge + yr) >= p.spouseRetireAge;
     const bothRetired = myRetired && (!p.hasSpouse || spouseRetired);
 
-    // 収入（55歳でキャップ）
-    const myG = Math.min(yr, Math.max(0, 55 - p.myAge));
-    const myInc = myRetired ? p.myPension : p.myTakeHome * Math.pow(1+p.myIncomeGrowth/100, myG);
+    // 収入（変動係数 or 上昇率）
+    const myBaseInc = p.useIncomeCoef
+      ? applyCoef(p.myTakeHome, p.myAge, Math.min(age, 70))
+      : p.myTakeHome * Math.pow(1 + p.myIncomeGrowth/100, Math.min(yr, Math.max(0, 55 - p.myAge)));
+    const myInc = myRetired ? p.myPension : myBaseInc;
     const inAdj = p.hasSpouse && p.spouseAdjEnabled && cy >= p.spouseAdjStart && cy <= p.spouseAdjEnd;
-    const spouseG = p.hasSpouse ? Math.min(yr, Math.max(0, 55 - p.spouseAge)) : 0;
-    const spouseBaseInc = p.hasSpouse ? p.spouseTakeHome * Math.pow(1+p.spouseIncomeGrowth/100, spouseG) : 0;
-    const spouseInc = !p.hasSpouse ? 0 : spouseRetired ? p.spousePension : inAdj ? spouseBaseInc * (p.spouseAdjRatio/100) : spouseBaseInc;
+    const spouseBaseRaw = p.hasSpouse ? (p.useIncomeCoef
+      ? applyCoef(p.spouseTakeHome, p.spouseAge, Math.min(p.spouseAge + yr, 70))
+      : p.spouseTakeHome * Math.pow(1 + p.spouseIncomeGrowth/100, Math.min(yr, Math.max(0, 55 - p.spouseAge))))
+      : 0;
+    const spouseBaseInc = inAdj ? spouseBaseRaw * (p.spouseAdjRatio/100) : spouseBaseRaw;
+    const spouseInc = !p.hasSpouse ? 0 : spouseRetired ? p.spousePension : spouseBaseInc;
     const income = myInc + spouseInc;
 
     const myBonus = age === p.myRetireAge ? p.myRetireBonus : 0;
     const spouseBonus = p.hasSpouse && (p.spouseAge+yr) === p.spouseRetireAge ? p.spouseRetireBonus : 0;
 
-    // 住宅
-    const bought = (p.houseCashPrice > 0 || p.houseLoan > 0) && yr >= p.houseYear;
+    // 住宅（複数物件）
     const per3 = cy <= p.period1End ? 1 : cy <= p.period2End ? 2 : 3;
-    const rentY = bought ? 0 : cy < p.rentEndYear ? (per3===1?p.rent1:per3===2?p.rent2:p.rent3) : 0;
-    const cashBuy = p.houseCashPrice > 0 && yr === p.houseYear ? p.houseCashPrice : 0;
-    const loanCost = yr>=p.houseYear && yr<p.houseYear+p.loanYears && p.houseLoan>0 ? loanAnnual : 0;
+    const houses = p.houses || [];
+    const boughtAny = houses.some(h => yr >= h.year && (h.cashPrice > 0 || h.loan > 0));
+    // 家賃: 住宅変更がある場合は購入年次で区間を切り替え、ない場合は period1/2End を使用
+    let rentY = 0;
+    if (!boughtAny && cy < p.rentEndYear) {
+      const sortedHouseYears = houses.map(h => BASE_YEAR + h.year).sort((a,b)=>a-b);
+      if (sortedHouseYears.length > 0) {
+        let seg = 0;
+        for (let k = 0; k < sortedHouseYears.length; k++) { if (cy < sortedHouseYears[k]) break; seg = k + 1; }
+        rentY = p[`rent${seg+1}`] || 0;
+      } else {
+        rentY = per3===1?p.rent1:per3===2?p.rent2:p.rent3;
+      }
+    }
+    let cashBuy = 0, loanCost = 0;
+    houses.forEach(h => {
+      if (h.cashPrice > 0 && yr === h.year) cashBuy += h.cashPrice;
+      const lm = h.loan > 0 ? (h.loan*(h.loanRate/100/12)*Math.pow(1+h.loanRate/100/12,h.loanYears*12))/(Math.pow(1+h.loanRate/100/12,h.loanYears*12)-1) : 0;
+      if (yr >= h.year && yr < h.year + h.loanYears && h.loan > 0) loanCost += lm * 12;
+    });
 
     // 教育費
     const ed = ca0 => { const ca=ca0+yr; if(ca>=0&&ca<3) return p.eduNursery; if(ca>=3&&ca<6) return p.eduNursery*0.5; if(ca>=6&&ca<12) return p.eduElementary; if(ca>=12&&ca<15) return p.eduJunior; if(ca>=15&&ca<18) return p.eduHigh; if(ca>=18&&ca<22) return p.eduCollege; return 0; };
@@ -208,11 +257,14 @@ function simulate(p) {
     cash = cash*(1+p.cashReturn/100)+cashFlow+myBonus+spouseBonus-cashBuy-eventCost-k1c-k2c;
 
     // 投資取崩し（住宅購入時）
-    if(p.houseInvestWithdraw>0 && yr===p.houseYear){
-      const w=p.houseInvestWithdraw;
-      if(p.houseInvestSource==="nisa"){const av=myNisa+spouseNisa;const tk=Math.min(w,av);const r=av>0?tk/av:0;myNisa=Math.max(0,myNisa*(1-r));spouseNisa=Math.max(0,spouseNisa*(1-r));cash+=tk;}
-      else if(p.houseInvestSource==="stock"){const av=myStock+spouseStock;const tk=Math.min(w,av);const r=av>0?tk/av:0;myStock=Math.max(0,myStock*(1-r));spouseStock=Math.max(0,spouseStock*(1-r));cash+=tk;}
-    }
+    houses.forEach(h => {
+      if (h.investWithdraw > 0 && yr === h.year) {
+        const w = h.investWithdraw;
+        if (h.investSource === "nisa") { const av=myNisa+spouseNisa; const tk=Math.min(w,av); const r=av>0?tk/av:0; myNisa=Math.max(0,myNisa*(1-r)); spouseNisa=Math.max(0,spouseNisa*(1-r)); cash+=tk; }
+        else if (h.investSource === "stock") { const av=myStock+spouseStock; const tk=Math.min(w,av); const r=av>0?tk/av:0; myStock=Math.max(0,myStock*(1-r)); spouseStock=Math.max(0,spouseStock*(1-r)); cash+=tk; }
+        else { const na=myNisa+spouseNisa; const tn=Math.min(w,na); const rn=na>0?tn/na:0; myNisa=Math.max(0,myNisa*(1-rn)); spouseNisa=Math.max(0,spouseNisa*(1-rn)); const rem=w-tn; const sa=myStock+spouseStock; const ts=Math.min(rem,sa); const rs=sa>0?ts/sa:0; myStock=Math.max(0,myStock*(1-rs)); spouseStock=Math.max(0,spouseStock*(1-rs)); cash+=tn+ts; }
+      }
+    });
 
     rows.push({
       age, year: cy, income: Math.round(income), cashFlow: Math.round(cashFlow),
@@ -226,7 +278,9 @@ function simulate(p) {
       total: Math.round(cash+myNisa+spouseNisa+myStock+spouseStock+kid1+kid2),
     });
   }
-  return { data: rows, loanMonthly: Math.round(lm) };
+  const firstLoan = (p.houses||[]).find(h=>h.loan>0);
+  const firstLm = firstLoan ? (firstLoan.loan*(firstLoan.loanRate/100/12)*Math.pow(1+firstLoan.loanRate/100/12,firstLoan.loanYears*12))/(Math.pow(1+firstLoan.loanRate/100/12,firstLoan.loanYears*12)-1) : 0;
+  return { data: rows, loanMonthly: Math.round(firstLm) };
 }
 
 // ── ウィザードのステップ定義 ──────────────────────────────────────
@@ -235,7 +289,8 @@ const STEPS = [
   { id: 2, icon: "💸", label: "収支" },
   { id: 3, icon: "📈", label: "投資" },
   { id: 4, icon: "🏠", label: "不動産" },
-  { id: 5, icon: "📊", label: "結果" },
+  { id: 5, icon: "🎯", label: "イベント" },
+  { id: 6, icon: "📊", label: "結果" },
 ];
 
 // ── メインコンポーネント ──────────────────────────────────────────
@@ -287,7 +342,7 @@ export default function LifePlanPro() {
   );
   const xAx = { dataKey:"age", interval:9, tickLine:false, height:34, tick:DualTick };
 
-  const goNext = () => setStep(s => Math.min(5, s+1));
+  const goNext = () => setStep(s => Math.min(6, s+1));
   const goPrev = () => setStep(s => Math.max(1, s-1));
 
   // ステップ完了判定
@@ -346,7 +401,10 @@ export default function LifePlanPro() {
             <SH title="本人" icon="🧑" color={C.accent} />
             <Row label="現在の年齢"><Num value={p.myAge} onChange={set("myAge")} min={20} max={70} unit="歳" /></Row>
             <Row label="手取り年収"><Num value={p.myTakeHome} onChange={set("myTakeHome")} min={0} max={3000} step={10} unit="万円" width={80} /></Row>
-            <Row label="収入の年上昇率" sub="0%でも可"><Num value={p.myIncomeGrowth} onChange={set("myIncomeGrowth")} min={0} max={5} step={0.1} unit="%" /></Row>
+            <Row label="収入変動係数を使う" sub="FP標準値（年齢帯別）を自動適用">
+              <Toggle value={p.useIncomeCoef} onChange={set("useIncomeCoef")} color={C.green} />
+            </Row>
+            {!p.useIncomeCoef && <Row label="収入の年上昇率"><Num value={p.myIncomeGrowth} onChange={set("myIncomeGrowth")} min={0} max={5} step={0.1} unit="%" /></Row>}
             <Row label="退職予定年齢"><Num value={p.myRetireAge} onChange={set("myRetireAge")} min={50} max={75} unit="歳" /></Row>
             <Row label="想定年金（年額）"><Num value={p.myPension} onChange={set("myPension")} min={0} max={400} step={5} unit="万円" width={80} /></Row>
             <Row label="退職金"><Num value={p.myRetireBonus} onChange={set("myRetireBonus")} min={0} max={5000} step={100} unit="万円" width={80} /></Row>
@@ -360,7 +418,7 @@ export default function LifePlanPro() {
             {p.hasSpouse && (<>
               <Row label="配偶者の年齢"><Num value={p.spouseAge} onChange={set("spouseAge")} min={20} max={70} unit="歳" color={C.purple} /></Row>
               <Row label="配偶者の手取り年収"><Num value={p.spouseTakeHome} onChange={set("spouseTakeHome")} min={0} max={2000} step={10} unit="万円" width={80} color={C.purple} /></Row>
-              <Row label="収入の年上昇率"><Num value={p.spouseIncomeGrowth} onChange={set("spouseIncomeGrowth")} min={0} max={5} step={0.1} unit="%" color={C.purple} /></Row>
+              {!p.useIncomeCoef && <Row label="収入の年上昇率"><Num value={p.spouseIncomeGrowth} onChange={set("spouseIncomeGrowth")} min={0} max={5} step={0.1} unit="%" color={C.purple} /></Row>}
               <Row label="配偶者の退職予定年齢"><Num value={p.spouseRetireAge} onChange={set("spouseRetireAge")} min={50} max={75} unit="歳" color={C.purple} /></Row>
               <Row label="配偶者の想定年金（年額）"><Num value={p.spousePension} onChange={set("spousePension")} min={0} max={300} step={5} unit="万円" width={80} color={C.purple} /></Row>
               <Row label="配偶者の退職金"><Num value={p.spouseRetireBonus} onChange={set("spouseRetireBonus")} min={0} max={5000} step={100} unit="万円" width={80} color={C.purple} /></Row>
@@ -403,23 +461,53 @@ export default function LifePlanPro() {
           <Card color={`${C.accent}40`}>
             <SH title="家賃（期間別・年額）" icon="🏠" color={C.accent} />
             <div style={{ fontSize: 11, color: C.muted, marginBottom: 8 }}>住宅購入後はSTEP4で設定</div>
-            <div style={{ background: "#EFF6FF", borderRadius: 10, padding: "10px 12px", marginBottom: 10 }}>
-              <div style={{ fontSize: 11, fontWeight: 700, color: C.accent, marginBottom: 6 }}>📅 期間の区切り年を設定</div>
-              <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-                <div style={{ flex: 1 }}>
-                  <div style={{ fontSize: 10, color: C.muted, marginBottom: 3 }}>期間1の終わり</div>
-                  <Num value={p.period1End} onChange={v => setP(prev => ({ ...prev, period1End: Math.min(v, prev.period2End - 1) }))} min={BASE_YEAR} max={2060} unit="年まで" color={C.accent} width={64} />
+            {(() => {
+              // 住宅変更の年次から家賃期間を自動生成
+              const houseYears = (p.houses||[]).map(h => BASE_YEAR + h.year).sort((a,b)=>a-b);
+              // 購入がある場合: 各購入前の期間 / ない場合: 手動設定
+              if (houseYears.length > 0) {
+                const periods = [];
+                let prev = BASE_YEAR - 1;
+                houseYears.forEach((hy, i) => {
+                  periods.push({ label: `〜${hy-1}年`, start: prev+1, end: hy-1, key: `rent${i+1}` });
+                  prev = hy - 1;
+                });
+                periods.push({ label: `${houseYears[houseYears.length-1]}年〜`, start: houseYears[houseYears.length-1], end: 9999, key: `rent${houseYears.length+1}` });
+                // rent4まで対応（DEFAULTS拡張）
+                return (<>
+                  <div style={{ background: "#EFF6FF", borderRadius: 8, padding: "8px 10px", marginBottom: 8, fontSize: 11, color: C.accent }}>
+                    📅 STEP4の住宅変更年次と連動しています
+                  </div>
+                  <div style={{ display: "grid", gridTemplateColumns: `repeat(${Math.min(periods.length,3)},1fr)`, gap: 8, marginBottom: 8 }}>
+                    {periods.map((pd, i) => (
+                      <div key={i}>
+                        <div style={{ fontSize: 10, color: C.muted, marginBottom: 4, textAlign: "center", lineHeight: 1.3 }}>{pd.label}</div>
+                        <Num value={p[pd.key]||0} onChange={v=>set(pd.key)(v)} min={0} max={360} step={6} unit="万" width={52} />
+                      </div>
+                    ))}
+                  </div>
+                </>);
+              }
+              return (<>
+                <div style={{ background: "#EFF6FF", borderRadius: 10, padding: "10px 12px", marginBottom: 10 }}>
+                  <div style={{ fontSize: 11, fontWeight: 700, color: C.accent, marginBottom: 6 }}>📅 期間の区切り年を手動設定</div>
+                  <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+                    <div style={{ flex: 1 }}>
+                      <div style={{ fontSize: 10, color: C.muted, marginBottom: 3 }}>期間1の終わり</div>
+                      <Num value={p.period1End} onChange={v => setP(prev => ({ ...prev, period1End: Math.min(v, prev.period2End - 1) }))} min={BASE_YEAR} max={2060} unit="年まで" color={C.accent} width={64} />
+                    </div>
+                    <div style={{ fontSize: 18, color: C.muted }}>→</div>
+                    <div style={{ flex: 1 }}>
+                      <div style={{ fontSize: 10, color: C.muted, marginBottom: 3 }}>期間2の終わり</div>
+                      <Num value={p.period2End} onChange={v => setP(prev => ({ ...prev, period2End: Math.max(v, prev.period1End + 1) }))} min={BASE_YEAR+1} max={2065} unit="年まで" color={C.accent} width={64} />
+                    </div>
+                  </div>
                 </div>
-                <div style={{ fontSize: 18, color: C.muted }}>→</div>
-                <div style={{ flex: 1 }}>
-                  <div style={{ fontSize: 10, color: C.muted, marginBottom: 3 }}>期間2の終わり</div>
-                  <Num value={p.period2End} onChange={v => setP(prev => ({ ...prev, period2End: Math.max(v, prev.period1End + 1) }))} min={BASE_YEAR+1} max={2065} unit="年まで" color={C.accent} width={64} />
-                </div>
-              </div>
-            </div>
-            <Period3 values={[p.rent1,p.rent2,p.rent3]} onChange={(i,v)=>setP3("rent",i,v)} max={360} step={6}
-              labels={[`〜${p.period1End}`, `${p.period1End+1}〜${p.period2End}`, `${p.period2End+1}〜`]} />
-            <Row label="家賃終了年" sub="この年以降は0円"><Num value={p.rentEndYear} onChange={set("rentEndYear")} min={BASE_YEAR} max={2060} unit="年" /></Row>
+                <Period3 values={[p.rent1,p.rent2,p.rent3]} onChange={(i,v)=>setP3("rent",i,v)} max={360} step={6}
+                  labels={[`〜${p.period1End}`, `${p.period1End+1}〜${p.period2End}`, `${p.period2End+1}〜`]} />
+              </>);
+            })()}
+            <Row label="家賃終了年" sub="購入後この年以降は0円"><Num value={p.rentEndYear} onChange={set("rentEndYear")} min={BASE_YEAR} max={2060} unit="年" /></Row>
           </Card>
 
           <Card>
@@ -460,24 +548,39 @@ export default function LifePlanPro() {
             </div>
           </div>
 
-          {/* 期間区切り（家賃と共通） */}
-          <div style={{ background: "#EFF6FF", borderRadius: 12, padding: "12px 14px", marginBottom: 12, border: `1px solid ${C.accent}30` }}>
-            <div style={{ fontSize: 12, fontWeight: 700, color: C.accent, marginBottom: 6 }}>📅 投資期間の区切り年（STEP2と共通）</div>
-            <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-              <div style={{ flex: 1 }}>
-                <div style={{ fontSize: 10, color: C.muted, marginBottom: 3 }}>期間1の終わり</div>
-                <Num value={p.period1End} onChange={v => setP(prev => ({ ...prev, period1End: Math.min(v, prev.period2End - 1) }))} min={BASE_YEAR} max={2060} unit="年まで" color={C.accent} width={64} />
+          {/* 期間区切り：住宅変更と連動 or 手動 */}
+          {(() => {
+            const houseYears = (p.houses||[]).map(h=>BASE_YEAR+h.year).sort((a,b)=>a-b);
+            if (houseYears.length > 0) {
+              return (
+                <div style={{ background: "#EFF6FF", borderRadius: 12, padding: "12px 14px", marginBottom: 12, border: `1px solid ${C.accent}30` }}>
+                  <div style={{ fontSize: 12, fontWeight: 700, color: C.accent, marginBottom: 4 }}>📅 投資期間の区切り（STEP4の住宅変更と連動）</div>
+                  <div style={{ fontSize: 11, color: C.muted }}>
+                    {houseYears.map((y,i)=>`期間${i+1}: 〜${y-1}年`).join("　")}　期間{houseYears.length+1}: {houseYears[houseYears.length-1]}年〜
+                  </div>
+                </div>
+              );
+            }
+            return (
+              <div style={{ background: "#EFF6FF", borderRadius: 12, padding: "12px 14px", marginBottom: 12, border: `1px solid ${C.accent}30` }}>
+                <div style={{ fontSize: 12, fontWeight: 700, color: C.accent, marginBottom: 6 }}>📅 投資期間の区切り年（手動設定）</div>
+                <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: 10, color: C.muted, marginBottom: 3 }}>期間1の終わり</div>
+                    <Num value={p.period1End} onChange={v => setP(prev => ({ ...prev, period1End: Math.min(v, prev.period2End - 1) }))} min={BASE_YEAR} max={2060} unit="年まで" color={C.accent} width={64} />
+                  </div>
+                  <div style={{ fontSize: 18, color: C.muted }}>→</div>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: 10, color: C.muted, marginBottom: 3 }}>期間2の終わり</div>
+                    <Num value={p.period2End} onChange={v => setP(prev => ({ ...prev, period2End: Math.max(v, prev.period1End + 1) }))} min={BASE_YEAR+1} max={2065} unit="年まで" color={C.accent} width={64} />
+                  </div>
+                </div>
+                <div style={{ fontSize: 10, color: C.muted, marginTop: 6 }}>
+                  期間1: 〜{p.period1End}年　期間2: {p.period1End+1}〜{p.period2End}年　期間3: {p.period2End+1}年〜
+                </div>
               </div>
-              <div style={{ fontSize: 18, color: C.muted }}>→</div>
-              <div style={{ flex: 1 }}>
-                <div style={{ fontSize: 10, color: C.muted, marginBottom: 3 }}>期間2の終わり</div>
-                <Num value={p.period2End} onChange={v => setP(prev => ({ ...prev, period2End: Math.max(v, prev.period1End + 1) }))} min={BASE_YEAR+1} max={2065} unit="年まで" color={C.accent} width={64} />
-              </div>
-            </div>
-            <div style={{ fontSize: 10, color: C.muted, marginTop: 6 }}>
-              期間1: 〜{p.period1End}年　期間2: {p.period1End+1}〜{p.period2End}年　期間3: {p.period2End+1}年〜
-            </div>
-          </div>
+            );
+          })()}
 
           {/* 収支アドバイス */}
           {minusYears.length > 0 && (
@@ -490,7 +593,7 @@ export default function LifePlanPro() {
           <Card color={`${C.green}40`}>
             <SH title="本人 NISA（年額）" icon="📗" color={C.green} />
             <div style={{ fontSize: 11, color: C.muted, marginBottom: 4 }}>積立＋成長投資枠の合計</div>
-            <Period3 values={[p.myNisaAnnual1,p.myNisaAnnual2,p.myNisaAnnual3]} onChange={(i,v)=>setP3("myNisaAnnual",i,v)} max={360} step={12} labels={[`〜${p.period1End}`,`${p.period1End+1}〜${p.period2End}`,`${p.period2End+1}〜`]} />
+            <Period3 values={[p.myNisaAnnual1,p.myNisaAnnual2,p.myNisaAnnual3]} onChange={(i,v)=>setP3("myNisaAnnual",i,v)} max={360} step={12} labels={(() => { const hy=(p.houses||[]).map(h=>BASE_YEAR+h.year).sort((a,b)=>a-b); return hy.length>=2?[`〜${hy[0]-1}`,`${hy[0]}〜${hy[1]-1}`,`${hy[1]}〜`]:hy.length===1?[`〜${hy[0]-1}`,`${hy[0]}〜`,`${hy[0]}〜`]:[`〜${p.period1End}`,`${p.period1End+1}〜${p.period2End}`,`${p.period2End+1}〜`];})()} />
             <Row label="開始年"><Num value={p.myNisaStart} onChange={set("myNisaStart")} min={2020} max={2060} unit="年" color={C.green} /></Row>
             <Row label="終了年"><Num value={p.myNisaEnd} onChange={set("myNisaEnd")} min={2025} max={2070} unit="年" color={C.green} /></Row>
             <Row label="想定利回り"><Num value={p.myNisaReturn} onChange={set("myNisaReturn")} min={0} max={12} step={0.1} unit="%" color={C.green} /></Row>
@@ -499,7 +602,7 @@ export default function LifePlanPro() {
           {p.hasSpouse && (
             <Card color="#34D39940">
               <SH title="配偶者 NISA（年額）" icon="📗" color="#34D399" />
-              <Period3 values={[p.spouseNisaAnnual1,p.spouseNisaAnnual2,p.spouseNisaAnnual3]} onChange={(i,v)=>setP3("spouseNisaAnnual",i,v)} max={360} step={12} labels={[`〜${p.period1End}`,`${p.period1End+1}〜${p.period2End}`,`${p.period2End+1}〜`]} />
+              <Period3 values={[p.spouseNisaAnnual1,p.spouseNisaAnnual2,p.spouseNisaAnnual3]} onChange={(i,v)=>setP3("spouseNisaAnnual",i,v)} max={360} step={12} labels={(() => { const hy=(p.houses||[]).map(h=>BASE_YEAR+h.year).sort((a,b)=>a-b); return hy.length>=2?[`〜${hy[0]-1}`,`${hy[0]}〜${hy[1]-1}`,`${hy[1]}〜`]:hy.length===1?[`〜${hy[0]-1}`,`${hy[0]}〜`,`${hy[0]}〜`]:[`〜${p.period1End}`,`${p.period1End+1}〜${p.period2End}`,`${p.period2End+1}〜`];})()} /> />
               <Row label="開始年"><Num value={p.spouseNisaStart} onChange={set("spouseNisaStart")} min={2020} max={2060} unit="年" color="#34D399" /></Row>
               <Row label="終了年"><Num value={p.spouseNisaEnd} onChange={set("spouseNisaEnd")} min={2025} max={2070} unit="年" color="#34D399" /></Row>
               <Row label="想定利回り"><Num value={p.spouseNisaReturn} onChange={set("spouseNisaReturn")} min={0} max={12} step={0.1} unit="%" color="#34D399" /></Row>
@@ -509,7 +612,7 @@ export default function LifePlanPro() {
           <Card color={`${C.accent}40`}>
             <SH title="本人 証券口座（年額）" icon="📈" color={C.accent} />
             <div style={{ fontSize: 11, color: C.muted, marginBottom: 4 }}>NISA満額後の特定口座・ETF等</div>
-            <Period3 values={[p.myStockAnnual1,p.myStockAnnual2,p.myStockAnnual3]} onChange={(i,v)=>setP3("myStockAnnual",i,v)} max={600} step={12} labels={[`〜${p.period1End}`,`${p.period1End+1}〜${p.period2End}`,`${p.period2End+1}〜`]} />
+            <Period3 values={[p.myStockAnnual1,p.myStockAnnual2,p.myStockAnnual3]} onChange={(i,v)=>setP3("myStockAnnual",i,v)} max={600} step={12} labels={(() => { const hy=(p.houses||[]).map(h=>BASE_YEAR+h.year).sort((a,b)=>a-b); return hy.length>=2?[`〜${hy[0]-1}`,`${hy[0]}〜${hy[1]-1}`,`${hy[1]}〜`]:hy.length===1?[`〜${hy[0]-1}`,`${hy[0]}〜`,`${hy[0]}〜`]:[`〜${p.period1End}`,`${p.period1End+1}〜${p.period2End}`,`${p.period2End+1}〜`];})()} />
             <Row label="開始年"><Num value={p.myStockStart} onChange={set("myStockStart")} min={2020} max={2060} unit="年" /></Row>
             <Row label="終了年"><Num value={p.myStockEnd} onChange={set("myStockEnd")} min={2025} max={2070} unit="年" /></Row>
             <Row label="想定利回り"><Num value={p.myStockReturn} onChange={set("myStockReturn")} min={0} max={15} step={0.1} unit="%" /></Row>
@@ -518,7 +621,7 @@ export default function LifePlanPro() {
           {p.hasSpouse && (
             <Card color="#93C5FD40">
               <SH title="配偶者 証券口座（年額）" icon="📈" color="#93C5FD" />
-              <Period3 values={[p.spouseStockAnnual1,p.spouseStockAnnual2,p.spouseStockAnnual3]} onChange={(i,v)=>setP3("spouseStockAnnual",i,v)} max={600} step={12} labels={[`〜${p.period1End}`,`${p.period1End+1}〜${p.period2End}`,`${p.period2End+1}〜`]} />
+              <Period3 values={[p.spouseStockAnnual1,p.spouseStockAnnual2,p.spouseStockAnnual3]} onChange={(i,v)=>setP3("spouseStockAnnual",i,v)} max={600} step={12} labels={(() => { const hy=(p.houses||[]).map(h=>BASE_YEAR+h.year).sort((a,b)=>a-b); return hy.length>=2?[`〜${hy[0]-1}`,`${hy[0]}〜${hy[1]-1}`,`${hy[1]}〜`]:hy.length===1?[`〜${hy[0]-1}`,`${hy[0]}〜`,`${hy[0]}〜`]:[`〜${p.period1End}`,`${p.period1End+1}〜${p.period2End}`,`${p.period2End+1}〜`];})()} /> />
               <Row label="開始年"><Num value={p.spouseStockStart} onChange={set("spouseStockStart")} min={2020} max={2060} unit="年" color="#93C5FD" /></Row>
               <Row label="終了年"><Num value={p.spouseStockEnd} onChange={set("spouseStockEnd")} min={2025} max={2070} unit="年" color="#93C5FD" /></Row>
               <Row label="想定利回り"><Num value={p.spouseStockReturn} onChange={set("spouseStockReturn")} min={0} max={15} step={0.1} unit="%" color="#93C5FD" /></Row>
@@ -555,67 +658,132 @@ export default function LifePlanPro() {
         </>)}
 
         {/* ══ STEP 4: 不動産 ════════════════════════════════════════ */}
-        {step === 4 && (<>
-          <div style={{ background: "linear-gradient(135deg,#78350F,#F59E0B)", borderRadius: 16, padding: "20px", marginBottom: 16, color: "#fff" }}>
-            <div style={{ fontSize: 18, fontWeight: 800, marginBottom: 4 }}>🏠 不動産・住宅購入</div>
-            <div style={{ fontSize: 12, opacity: 0.8 }}>購入予定がない場合はそのまま次へ</div>
+        {step === 4 && (() => {
+          const houses = p.houses || [];
+          const updateHouse = (i, k, v) => setP(prev => {
+            const hs = [...(prev.houses||[])]; hs[i] = { ...hs[i], [k]: v }; return { ...prev, houses: hs };
+          });
+          const addHouse = () => setP(prev => ({ ...prev, houseCount: (prev.houseCount||0)+1, houses: [...(prev.houses||[]), { year: 5, cashPrice: 0, loan: 0, loanRate: 1.5, loanYears: 35, investWithdraw: 0, investSource: "nisa" }] }));
+          const removeHouse = i => setP(prev => ({ ...prev, houseCount: (prev.houseCount||0)-1, houses: (prev.houses||[]).filter((_,j)=>j!==i) }));
+          const houseColors = [C.yellow, C.orange, "#EF4444"];
+          return (<>
+            <div style={{ background: "linear-gradient(135deg,#78350F,#F59E0B)", borderRadius: 16, padding: "20px", marginBottom: 16, color: "#fff" }}>
+              <div style={{ fontSize: 18, fontWeight: 800, marginBottom: 4 }}>🏠 不動産・住宅購入</div>
+              <div style={{ fontSize: 12, opacity: 0.8 }}>購入・買替えの予定を回数分入力できます</div>
+            </div>
+
+            <Card>
+              <SH title="住宅変更の回数" icon="🏡" color={C.yellow} />
+              <div style={{ display: "flex", gap: 8, paddingTop: 8 }}>
+                {[0,1,2,3].map(n => (
+                  <button key={n} onClick={() => {
+                    const cur = p.houses||[];
+                    const next = n > cur.length
+                      ? [...cur, ...Array(n-cur.length).fill(null).map((_,i)=>({ year: 5+(i+cur.length)*10, cashPrice: 0, loan: 0, loanRate: 1.5, loanYears: 35, investWithdraw: 0, investSource: "nisa" }))]
+                      : cur.slice(0, n);
+                    setP(prev => ({ ...prev, houseCount: n, houses: next }));
+                  }}
+                    style={{ flex:1, padding:"10px 4px", borderRadius:10, border:`2px solid ${(p.houseCount||0)===n?C.yellow:C.border}`, background:(p.houseCount||0)===n?C.yellow:"#fff", color:(p.houseCount||0)===n?"#fff":C.muted, fontSize:13, fontWeight:700, cursor:"pointer" }}>
+                    {n===0?"なし":`${n}回`}
+                  </button>
+                ))}
+              </div>
+            </Card>
+
+            {houses.map((h, i) => {
+              const lm = h.loan > 0 ? (h.loan*(h.loanRate/100/12)*Math.pow(1+h.loanRate/100/12,h.loanYears*12))/(Math.pow(1+h.loanRate/100/12,h.loanYears*12)-1) : 0;
+              const col = houseColors[i] || C.yellow;
+              return (
+                <Card key={i} color={`${col}50`}>
+                  <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", paddingTop:14 }}>
+                    <span style={{ fontSize:13, fontWeight:800, color:col }}>{i===0?"🏠 第1回目の購入":i===1?"🏠 第2回目（買替え）":"🏠 第3回目（買替え）"}</span>
+                    <button onClick={()=>removeHouse(i)} style={{ background:"#FEF2F2",border:"none",borderRadius:6,padding:"4px 8px",color:C.red,cursor:"pointer",fontSize:11 }}>削除</button>
+                  </div>
+                  <Row label="購入時期"><Num value={h.year} onChange={v=>updateHouse(i,"year",v)} min={0} max={40} unit="年後" color={col} /></Row>
+                  <Row label="現金購入額" sub="0=現金購入なし"><Num value={h.cashPrice} onChange={v=>updateHouse(i,"cashPrice",v)} min={0} max={20000} step={100} unit="万円" width={80} color={col} /></Row>
+                  <Row label="ローン借入額" sub="0=ローンなし"><Num value={h.loan} onChange={v=>updateHouse(i,"loan",v)} min={0} max={20000} step={100} unit="万円" width={80} /></Row>
+                  {h.loan > 0 && (<>
+                    <Row label="金利（年率）"><Num value={h.loanRate} onChange={v=>updateHouse(i,"loanRate",v)} min={0.1} max={5} step={0.1} unit="%" /></Row>
+                    <Row label="返済期間"><Num value={h.loanYears} onChange={v=>updateHouse(i,"loanYears",v)} min={10} max={35} unit="年" /></Row>
+                    <div style={{ background:"#EFF6FF", borderRadius:8, padding:"8px 12px", marginTop:6, fontSize:12, color:C.accent, fontWeight:700 }}>
+                      月々の返済: 約{Math.round(lm).toLocaleString()}万円
+                    </div>
+                  </>)}
+                  {(h.cashPrice > 0 || h.loan > 0) && (<>
+                    <SH title="投資資産からの取崩し" icon="📤" color={C.purple} />
+                    <Row label="取崩し額"><Num value={h.investWithdraw} onChange={v=>updateHouse(i,"investWithdraw",v)} min={0} max={5000} step={50} unit="万円" width={80} color={C.purple} /></Row>
+                    <Row label="取崩し元">
+                      <div style={{ display:"flex", gap:6 }}>
+                        {[["nisa","NISA"],["stock","証券"],["both","両方"]].map(([v,l])=>(
+                          <button key={v} onClick={()=>updateHouse(i,"investSource",v)}
+                            style={{ padding:"5px 10px", borderRadius:8, border:`2px solid ${h.investSource===v?C.purple:C.border}`, background:h.investSource===v?C.purple:"#fff", color:h.investSource===v?"#fff":C.muted, fontSize:11, fontWeight:700, cursor:"pointer" }}>
+                            {l}
+                          </button>
+                        ))}
+                      </div>
+                    </Row>
+                  </>)}
+                </Card>
+              );
+            })}
+          </>);
+        })()}
+
+        {/* ══ STEP 5: ライフイベント ════════════════════════════════ */}
+        {step === 5 && (<>
+          <div style={{ background: "linear-gradient(135deg,#4C1D95,#8B5CF6)", borderRadius: 16, padding: "20px", marginBottom: 16, color: "#fff" }}>
+            <div style={{ fontSize: 18, fontWeight: 800, marginBottom: 4 }}>🎯 ライフイベント</div>
+            <div style={{ fontSize: 12, opacity: 0.8 }}>車の買替えや旅行など大きな一時出費を登録します</div>
           </div>
 
-          <Card color={`${C.yellow}40`}>
-            <SH title="住宅購入" icon="🏡" color={C.yellow} />
-            <Row label="購入時期"><Num value={p.houseYear} onChange={set("houseYear")} min={0} max={30} unit="年後" color={C.yellow} /></Row>
-            <Row label="現金購入額" sub="0=購入しない"><Num value={p.houseCashPrice} onChange={set("houseCashPrice")} min={0} max={20000} step={100} unit="万円" width={80} color={C.yellow} /></Row>
-            {p.houseCashPrice > 0 && (<>
-              <SH title="投資資産からの取崩し" icon="📤" color={C.purple} />
-              <Row label="取崩し額"><Num value={p.houseInvestWithdraw} onChange={set("houseInvestWithdraw")} min={0} max={5000} step={50} unit="万円" width={80} color={C.purple} /></Row>
-              <Row label="取崩し元">
-                <div style={{ display: "flex", gap: 6 }}>
-                  {[["nisa","NISA"],["stock","証券"],["both","両方"]].map(([v,l])=>(
-                    <button key={v} onClick={()=>set("houseInvestSource")(v)}
-                      style={{ padding:"6px 12px", borderRadius:8, border:`2px solid ${p.houseInvestSource===v?C.purple:C.border}`, background:p.houseInvestSource===v?C.purple:"#fff", color:p.houseInvestSource===v?"#fff":C.muted, fontSize:12, fontWeight:700, cursor:"pointer" }}>
-                      {l}
-                    </button>
-                  ))}
+          {/* イベント一覧（発生年でソート） */}
+          {[...(p.events||[])].sort((a,b)=>a.year-b.year).map(ev => (
+            <div key={ev.id} style={{ background: C.panel, borderRadius: 12, padding: "12px 14px", marginBottom: 8, border: `1px solid ${C.purple}30`, display: "flex", alignItems: "center", gap: 10 }}>
+              <span style={{ fontSize: 22, flexShrink: 0 }}>{ev.icon}</span>
+              <div style={{ flex: 1 }}>
+                <input value={ev.name} onChange={e => setP(prev=>({...prev, events:prev.events.map(x=>x.id===ev.id?{...x,name:e.target.value}:x)}))}
+                  style={{ fontSize:13, fontWeight:700, border:"none", borderBottom:`1.5px solid ${C.purple}`, background:"transparent", outline:"none", color:C.dark, width:"100%", marginBottom:6 }} />
+                <div style={{ display:"flex", gap:12, alignItems:"center" }}>
+                  <div>
+                    <div style={{ fontSize:10, color:C.muted }}>発生時期</div>
+                    <Num value={ev.year} onChange={v=>setP(prev=>({...prev,events:prev.events.map(x=>x.id===ev.id?{...x,year:v}:x)}))} min={0} max={50} unit="年後" color={C.purple} width={52} />
+                  </div>
+                  <div>
+                    <div style={{ fontSize:10, color:C.muted }}>金額</div>
+                    <Num value={ev.amount} onChange={v=>setP(prev=>({...prev,events:prev.events.map(x=>x.id===ev.id?{...x,amount:v}:x)}))} min={0} max={5000} step={10} unit="万円" color={C.purple} width={64} />
+                  </div>
+                  <div style={{ marginTop:14 }}>
+                    <div style={{ fontSize:10, color:C.muted }}>{p.myAge+ev.year}歳・{BASE_YEAR+ev.year}年</div>
+                  </div>
                 </div>
-              </Row>
-            </>)}
-          </Card>
-
-          <Card>
-            <SH title="住宅ローン" icon="🏦" color={C.muted} />
-            <Row label="ローン借入額" sub="0=ローンなし"><Num value={p.houseLoan} onChange={set("houseLoan")} min={0} max={20000} step={100} unit="万円" width={80} /></Row>
-            {p.houseLoan > 0 && (<>
-              <Row label="金利（年率）"><Num value={p.loanRate} onChange={set("loanRate")} min={0.1} max={5} step={0.1} unit="%" /></Row>
-              <Row label="返済期間"><Num value={p.loanYears} onChange={set("loanYears")} min={10} max={35} unit="年" /></Row>
-              <div style={{ background: "#EFF6FF", borderRadius: 8, padding: "10px 12px", marginTop: 8, fontSize: 13, color: C.accent, fontWeight: 700 }}>
-                月々の返済: 約{loanMonthly.toLocaleString()}万円
               </div>
-            </>)}
-          </Card>
+              <button onClick={()=>setP(prev=>({...prev,events:prev.events.filter(e=>e.id!==ev.id)}))}
+                style={{ background:"#FEF2F2",border:"none",borderRadius:8,padding:"6px 8px",color:C.red,cursor:"pointer",fontSize:18, flexShrink:0 }}>🗑</button>
+            </div>
+          ))}
 
-          <Card>
-            <SH title="ライフイベント（一時出費）" icon="🎯" color={C.purple} />
-            {p.events.map(ev => (
-              <div key={ev.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 0", borderBottom: `1px solid ${C.border}` }}>
-                <span style={{ fontSize: 18 }}>{ev.icon}</span>
-                <span style={{ flex: 1, fontSize: 12, color: C.text }}>{ev.name}（{p.myAge+ev.year}歳・{ev.amount}万）</span>
-                <button onClick={()=>setP(prev=>({...prev,events:prev.events.filter(e=>e.id!==ev.id)}))}
-                  style={{ background:"#FEF2F2",border:"none",borderRadius:6,padding:"4px 8px",color:C.red,cursor:"pointer",fontSize:11 }}>削除</button>
-              </div>
-            ))}
-            <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 10 }}>
-              {[{icon:"🚗",name:"車",amt:300},{icon:"✈️",name:"旅行",amt:50},{icon:"🛋️",name:"家具",amt:80},{icon:"🏥",name:"医療",amt:100},{icon:"💰",name:"その他",amt:100}].map(cat=>(
-                <button key={cat.name} onClick={()=>setP(prev=>({...prev,events:[...prev.events,{id:Date.now(),name:cat.name,year:3,amount:cat.amt,icon:cat.icon}]}))}
-                  style={{ padding:"8px 12px",borderRadius:20,border:`1.5px solid ${C.purple}30`,background:"#F5F3FF",cursor:"pointer",fontSize:12,color:C.purple,fontWeight:600 }}>
-                  {cat.icon} {cat.name}
+          {(p.events||[]).length === 0 && (
+            <div style={{ textAlign:"center", padding:"30px 20px", color:C.muted, fontSize:13 }}>まだイベントがありません</div>
+          )}
+
+          {/* カテゴリから追加 */}
+          <div style={{ background: C.panel, borderRadius: 14, padding: "14px", border: `2px dashed ${C.purple}40` }}>
+            <div style={{ fontSize: 12, fontWeight: 700, color: C.purple, marginBottom: 10 }}>＋ カテゴリから追加</div>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 8 }}>
+              {[{icon:"🚗",name:"車の購入",amt:300},{icon:"🔧",name:"車の買替",amt:200},{icon:"✈️",name:"旅行",amt:50},{icon:"🛋️",name:"家具・家電",amt:100},{icon:"🏥",name:"医療・介護",amt:200},{icon:"🎓",name:"教育費",amt:100},{icon:"💍",name:"冠婚葬祭",amt:100},{icon:"🖥️",name:"PC・機器",amt:30},{icon:"💰",name:"その他",amt:100}].map(cat=>(
+                <button key={cat.name} onClick={()=>setP(prev=>({...prev,events:[...(prev.events||[]),{id:Date.now(),name:cat.name,year:3,amount:cat.amt,icon:cat.icon}]}))}
+                  style={{ padding:"10px 4px",borderRadius:10,border:`1.5px solid ${C.purple}30`,background:"#F5F3FF",cursor:"pointer",display:"flex",flexDirection:"column",alignItems:"center",gap:4 }}>
+                  <span style={{ fontSize:22 }}>{cat.icon}</span>
+                  <span style={{ fontSize:10,fontWeight:700,color:C.purple }}>{cat.name}</span>
+                  <span style={{ fontSize:9,color:C.muted }}>{cat.amt}万〜</span>
                 </button>
               ))}
             </div>
-          </Card>
+          </div>
         </>)}
 
-        {/* ══ STEP 5: 結果 ══════════════════════════════════════════ */}
-        {step === 5 && (<>
+        {/* ══ STEP 6: 結果 ══════════════════════════════════════════ */}
+        {step === 6 && (<>
           {/* KPIカード */}
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 16 }}>
             {[
@@ -729,12 +897,12 @@ export default function LifePlanPro() {
               ← 戻る
             </button>
           )}
-          {step < 5 && (
+          {step < 6 && (
             <button onClick={goNext} style={{ flex: 2, padding: "14px", borderRadius: 12, border: "none", background: `linear-gradient(135deg,${C.accent},#2563EB)`, color: "#fff", fontSize: 15, fontWeight: 700, cursor: "pointer" }}>
               次へ →
             </button>
           )}
-          {step === 5 && (
+          {step === 6 && (
             <button onClick={() => setStep(1)} style={{ flex: 1, padding: "14px", borderRadius: 12, border: `2px solid ${C.accent}`, background: "#fff", color: C.accent, fontSize: 14, fontWeight: 700, cursor: "pointer" }}>
               ✏️ 設定を編集
             </button>
