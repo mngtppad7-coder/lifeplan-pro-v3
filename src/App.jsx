@@ -646,7 +646,7 @@ export default function LifePlanPro() {
           {p.hasSpouse && (
             <Card color="#34D39940">
               <SH title="配偶者 NISA（年額）" icon="📗" color="#34D399" />
-              <Period3 values={[p.spouseNisaAnnual1,p.spouseNisaAnnual2,p.spouseNisaAnnual3]} onChange={(i,v)=>setP3("spouseNisaAnnual",i,v)} max={360} step={12} labels={(() => { const hy=(p.houses||[]).map(h=>BASE_YEAR+h.year).sort((a,b)=>a-b); return hy.length>=2?[`〜${hy[0]-1}`,`${hy[0]}〜${hy[1]-1}`,`${hy[1]}〜`]:hy.length===1?[`〜${hy[0]-1}`,`${hy[0]}〜`,`${hy[0]}〜`]:[`〜${p.period1End}`,`${p.period1End+1}〜${p.period2End}`,`${p.period2End+1}〜`];})()} /> />
+              <Period3 values={[p.spouseNisaAnnual1,p.spouseNisaAnnual2,p.spouseNisaAnnual3]} onChange={(i,v)=>setP3("spouseNisaAnnual",i,v)} max={360} step={12} labels={(() => { const hy=(p.houses||[]).map(h=>BASE_YEAR+h.year).sort((a,b)=>a-b); return hy.length>=2?[`〜${hy[0]-1}`,`${hy[0]}〜${hy[1]-1}`,`${hy[1]}〜`]:hy.length===1?[`〜${hy[0]-1}`,`${hy[0]}〜`,`${hy[0]}〜`]:[`〜${p.period1End}`,`${p.period1End+1}〜${p.period2End}`,`${p.period2End+1}〜`];})()} />
               <Row label="開始年"><Num value={p.spouseNisaStart} onChange={set("spouseNisaStart")} min={2020} max={2060} unit="年" color="#34D399" /></Row>
               <Row label="終了年"><Num value={p.spouseNisaEnd} onChange={set("spouseNisaEnd")} min={2025} max={2070} unit="年" color="#34D399" /></Row>
               <Row label="想定利回り"><Num value={p.spouseNisaReturn} onChange={set("spouseNisaReturn")} min={0} max={12} step={0.1} unit="%" color="#34D399" /></Row>
@@ -665,7 +665,7 @@ export default function LifePlanPro() {
           {p.hasSpouse && (
             <Card color="#93C5FD40">
               <SH title="配偶者 証券口座（年額）" icon="📈" color="#93C5FD" />
-              <Period3 values={[p.spouseStockAnnual1,p.spouseStockAnnual2,p.spouseStockAnnual3]} onChange={(i,v)=>setP3("spouseStockAnnual",i,v)} max={600} step={12} labels={(() => { const hy=(p.houses||[]).map(h=>BASE_YEAR+h.year).sort((a,b)=>a-b); return hy.length>=2?[`〜${hy[0]-1}`,`${hy[0]}〜${hy[1]-1}`,`${hy[1]}〜`]:hy.length===1?[`〜${hy[0]-1}`,`${hy[0]}〜`,`${hy[0]}〜`]:[`〜${p.period1End}`,`${p.period1End+1}〜${p.period2End}`,`${p.period2End+1}〜`];})()} /> />
+              <Period3 values={[p.spouseStockAnnual1,p.spouseStockAnnual2,p.spouseStockAnnual3]} onChange={(i,v)=>setP3("spouseStockAnnual",i,v)} max={600} step={12} labels={(() => { const hy=(p.houses||[]).map(h=>BASE_YEAR+h.year).sort((a,b)=>a-b); return hy.length>=2?[`〜${hy[0]-1}`,`${hy[0]}〜${hy[1]-1}`,`${hy[1]}〜`]:hy.length===1?[`〜${hy[0]-1}`,`${hy[0]}〜`,`${hy[0]}〜`]:[`〜${p.period1End}`,`${p.period1End+1}〜${p.period2End}`,`${p.period2End+1}〜`];})()} />
               <Row label="開始年"><Num value={p.spouseStockStart} onChange={set("spouseStockStart")} min={2020} max={2060} unit="年" color="#93C5FD" /></Row>
               <Row label="終了年"><Num value={p.spouseStockEnd} onChange={set("spouseStockEnd")} min={2025} max={2070} unit="年" color="#93C5FD" /></Row>
               <Row label="想定利回り"><Num value={p.spouseStockReturn} onChange={set("spouseStockReturn")} min={0} max={15} step={0.1} unit="%" color="#93C5FD" /></Row>
