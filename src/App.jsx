@@ -30,9 +30,17 @@ const DEFAULTS = {
   transport: 12, leisure: 30, insurance: 60,
   clothing: 10, medical: 8, other: 20,
   eduNursery: 30, eduElementary: 60, eduJunior: 114, eduHigh: 97, eduCollege: 103,
-  period1End: BASE_YEAR+4,  // 期間1の最終年（〜この年）
-  period2End: BASE_YEAR+9,  // 期間2の最終年（〜この年）
-  rent1: 120, rent2: 120, rent3: 0, rent4: 0, rent5: 0, rentEndYear: BASE_YEAR+10,
+  // 住宅タイプ
+  housingType: "rent",  // "rent" | "own"
+  // 家賃セグメント（賃貸の場合）: [{endYear, amount}] 最後のセグメントはendYear不要
+  rentSegments: [{ amount: 120 }],
+  // 固定資産税（持ち家の場合は住宅購入価格から自動計算も可）
+  propertyTaxEnabled: true,
+  propertyTaxRate: 0.14,  // 実効税率 %（課税評価額×1.4%×軽減）
+  // 不動産評価額（グラフ表示用）
+  propertyInitialValue: 0,   // 購入価格（万円）
+  propertyBuildYear: BASE_YEAR,  // 建築年（築年数計算用）
+  propertyDepreciationRate: 1.5, // 年間減価率 %（木造: 約2%、RC: 約1%）
   // STEP3: 投資
   myNisaAnnual1: 0, myNisaAnnual2: 0, myNisaAnnual3: 0,
   myNisaStart: BASE_YEAR, myNisaEnd: BASE_YEAR+35, myNisaReturn: 5.0,
@@ -204,27 +212,39 @@ function simulate(p) {
     const spouseBonus = p.hasSpouse && (p.spouseAge+yr) === p.spouseRetireAge ? p.spouseRetireBonus : 0;
 
     // 住宅（複数物件）
-    const per3 = cy <= p.period1End ? 1 : cy <= p.period2End ? 2 : 3;
     const houses = p.houses || [];
     const boughtAny = houses.some(h => yr >= h.year && (h.cashPrice > 0 || h.loan > 0));
-    // 家賃: 住宅変更がある場合は購入年次で区間を切り替え、ない場合は period1/2End を使用
+
+    // 家賃（賃貸の場合 & segments対応）
     let rentY = 0;
-    if (!boughtAny && cy < p.rentEndYear) {
-      const sortedHouseYears = houses.map(h => BASE_YEAR + h.year).sort((a,b)=>a-b);
-      if (sortedHouseYears.length > 0) {
-        let seg = 0;
-        for (let k = 0; k < sortedHouseYears.length; k++) { if (cy < sortedHouseYears[k]) break; seg = k + 1; }
-        rentY = p[`rent${seg+1}`] || 0;
-      } else {
-        rentY = per3===1?p.rent1:per3===2?p.rent2:p.rent3;
+    if (p.housingType === "rent" && !boughtAny) {
+      const segs = p.rentSegments || [{ amount: 120 }];
+      let matched = segs[segs.length - 1]; // デフォルトは最後のセグメント
+      for (let k = 0; k < segs.length - 1; k++) {
+        if (segs[k].endYear && cy <= segs[k].endYear) { matched = segs[k]; break; }
       }
+      rentY = matched.amount || 0;
     }
+
     let cashBuy = 0, loanCost = 0;
     houses.forEach(h => {
       if (h.cashPrice > 0 && yr === h.year) cashBuy += h.cashPrice;
       const lm = h.loan > 0 ? (h.loan*(h.loanRate/100/12)*Math.pow(1+h.loanRate/100/12,h.loanYears*12))/(Math.pow(1+h.loanRate/100/12,h.loanYears*12)-1) : 0;
       if (yr >= h.year && yr < h.year + h.loanYears && h.loan > 0) loanCost += lm * 12;
     });
+
+    // 固定資産税（持ち家 or 住宅購入後）
+    const ownedHouseYear = houses.length > 0 ? houses[0].year : null;
+    const isOwned = p.housingType === "own" || (ownedHouseYear !== null && yr >= ownedHouseYear);
+    const firstHousePrice = houses.length > 0 ? (houses[0].cashPrice + houses[0].loan) : p.propertyInitialValue || 0;
+    const propTax = isOwned && p.propertyTaxEnabled && firstHousePrice > 0
+      ? Math.round(firstHousePrice * (p.propertyTaxRate / 100) * Math.max(0.1, 1 - (yr - (ownedHouseYear||0)) * 0.02))
+      : 0;
+
+    // 不動産評価額（購入価格から年率減価）
+    const propVal = isOwned && firstHousePrice > 0
+      ? Math.round(firstHousePrice * Math.pow(1 - (p.propertyDepreciationRate||1.5)/100, Math.max(0, yr - (ownedHouseYear||0))))
+      : 0;
 
     // 教育費
     const ed = ca0 => { const ca=ca0+yr; if(ca>=0&&ca<3) return p.eduNursery; if(ca>=3&&ca<6) return p.eduNursery*0.5; if(ca>=6&&ca<12) return p.eduElementary; if(ca>=12&&ca<15) return p.eduJunior; if(ca>=15&&ca<18) return p.eduHigh; if(ca>=18&&ca<22) return p.eduCollege; return 0; };
@@ -239,7 +259,7 @@ function simulate(p) {
     const investTotal = myNisaC + spouseNisaC + myStockC + spouseStockC;
 
     const eventCost = p.events.filter(ev=>ev.year===yr).reduce((s,ev)=>s+ev.amount,0);
-    const totalCost = annualLiving + rentY + loanCost + eduCost + p.insurance + investTotal;
+    const totalCost = annualLiving + rentY + loanCost + propTax + eduCost + p.insurance + investTotal;
     const cashFlow = income - totalCost;
 
     myNisa = myNisa*(1+p.myNisaReturn/100)+myNisaC;
@@ -275,7 +295,9 @@ function simulate(p) {
       spouseNisaAsset: Math.round(spouseNisa), myStockAsset: Math.round(myStock),
       spouseStockAsset: Math.round(spouseStock),
       kid1NisaAsset: Math.round(kid1), kid2NisaAsset: Math.round(kid2),
-      total: Math.round(cash+myNisa+spouseNisa+myStock+spouseStock+kid1+kid2),
+      propTax: Math.round(propTax),
+      propVal: Math.round(propVal),
+      total: Math.round(cash+myNisa+spouseNisa+myStock+spouseStock+kid1+kid2+propVal),
     });
   }
   const firstLoan = (p.houses||[]).find(h=>h.loan>0);
@@ -458,57 +480,79 @@ export default function LifePlanPro() {
             <div style={{ fontSize: 20, fontWeight: 800, marginTop: 12 }}>年間支出合計: <span style={{ color: "#FDE68A" }}>{Math.round(p.food+p.daily+p.utility+p.comm+p.transport+p.leisure+p.insurance+p.clothing+p.medical+p.other).toLocaleString()}万円</span></div>
           </div>
 
+          {/* 住宅タイプ選択 */}
           <Card color={`${C.accent}40`}>
-            <SH title="家賃（期間別・年額）" icon="🏠" color={C.accent} />
-            <div style={{ fontSize: 11, color: C.muted, marginBottom: 8 }}>住宅購入後はSTEP4で設定</div>
-            {(() => {
-              // 住宅変更の年次から家賃期間を自動生成
-              const houseYears = (p.houses||[]).map(h => BASE_YEAR + h.year).sort((a,b)=>a-b);
-              // 購入がある場合: 各購入前の期間 / ない場合: 手動設定
-              if (houseYears.length > 0) {
-                const periods = [];
-                let prev = BASE_YEAR - 1;
-                houseYears.forEach((hy, i) => {
-                  periods.push({ label: `〜${hy-1}年`, start: prev+1, end: hy-1, key: `rent${i+1}` });
-                  prev = hy - 1;
-                });
-                periods.push({ label: `${houseYears[houseYears.length-1]}年〜`, start: houseYears[houseYears.length-1], end: 9999, key: `rent${houseYears.length+1}` });
-                // rent4まで対応（DEFAULTS拡張）
-                return (<>
-                  <div style={{ background: "#EFF6FF", borderRadius: 8, padding: "8px 10px", marginBottom: 8, fontSize: 11, color: C.accent }}>
-                    📅 STEP4の住宅変更年次と連動しています
-                  </div>
-                  <div style={{ display: "grid", gridTemplateColumns: `repeat(${Math.min(periods.length,3)},1fr)`, gap: 8, marginBottom: 8 }}>
-                    {periods.map((pd, i) => (
-                      <div key={i}>
-                        <div style={{ fontSize: 10, color: C.muted, marginBottom: 4, textAlign: "center", lineHeight: 1.3 }}>{pd.label}</div>
-                        <Num value={p[pd.key]||0} onChange={v=>set(pd.key)(v)} min={0} max={360} step={6} unit="万" width={52} />
-                      </div>
-                    ))}
-                  </div>
-                </>);
-              }
-              return (<>
-                <div style={{ background: "#EFF6FF", borderRadius: 10, padding: "10px 12px", marginBottom: 10 }}>
-                  <div style={{ fontSize: 11, fontWeight: 700, color: C.accent, marginBottom: 6 }}>📅 期間の区切り年を手動設定</div>
-                  <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-                    <div style={{ flex: 1 }}>
-                      <div style={{ fontSize: 10, color: C.muted, marginBottom: 3 }}>期間1の終わり</div>
-                      <Num value={p.period1End} onChange={v => setP(prev => ({ ...prev, period1End: Math.min(v, prev.period2End - 1) }))} min={BASE_YEAR} max={2060} unit="年まで" color={C.accent} width={64} />
-                    </div>
-                    <div style={{ fontSize: 18, color: C.muted }}>→</div>
-                    <div style={{ flex: 1 }}>
-                      <div style={{ fontSize: 10, color: C.muted, marginBottom: 3 }}>期間2の終わり</div>
-                      <Num value={p.period2End} onChange={v => setP(prev => ({ ...prev, period2End: Math.max(v, prev.period1End + 1) }))} min={BASE_YEAR+1} max={2065} unit="年まで" color={C.accent} width={64} />
-                    </div>
-                  </div>
-                </div>
-                <Period3 values={[p.rent1,p.rent2,p.rent3]} onChange={(i,v)=>setP3("rent",i,v)} max={360} step={6}
-                  labels={[`〜${p.period1End}`, `${p.period1End+1}〜${p.period2End}`, `${p.period2End+1}〜`]} />
-              </>);
-            })()}
-            <Row label="家賃終了年" sub="購入後この年以降は0円"><Num value={p.rentEndYear} onChange={set("rentEndYear")} min={BASE_YEAR} max={2060} unit="年" /></Row>
+            <SH title="住まいのタイプ" icon="🏠" color={C.accent} />
+            <div style={{ display: "flex", gap: 10, paddingTop: 8, paddingBottom: 4 }}>
+              {[["rent","🏢 賃貸"],["own","🏡 持ち家（既に保有）"]].map(([v,l])=>(
+                <button key={v} onClick={()=>set("housingType")(v)}
+                  style={{ flex:1, padding:"12px 8px", borderRadius:12, border:`2px solid ${p.housingType===v?C.accent:C.border}`, background:p.housingType===v?C.accent:"#fff", color:p.housingType===v?"#fff":C.muted, fontSize:13, fontWeight:700, cursor:"pointer" }}>
+                  {l}
+                </button>
+              ))}
+            </div>
+            <div style={{ fontSize: 11, color: C.muted, paddingBottom: 4 }}>
+              {p.housingType==="rent" ? "賃貸の方は下で家賃を設定してください。住宅購入予定はSTEP4で入力します。" : "現在の持ち家情報をSTEP4で入力してください。"}
+            </div>
           </Card>
+
+          {/* 家賃セグメント（賃貸のみ表示） */}
+          {p.housingType === "rent" && (() => {
+            const segs = p.rentSegments || [{ amount: 120 }];
+            const updateSeg = (i, k, v) => setP(prev => {
+              const s = [...(prev.rentSegments||[])]; s[i] = { ...s[i], [k]: v }; return { ...prev, rentSegments: s };
+            });
+            const addSeg = () => {
+              const lastEnd = segs[segs.length-2]?.endYear || BASE_YEAR + 4;
+              setP(prev => {
+                const s = [...(prev.rentSegments||[])];
+                s.splice(s.length-1, 0, { endYear: lastEnd + 5, amount: s[s.length-1]?.amount || 120 });
+                return { ...prev, rentSegments: s };
+              });
+            };
+            const removeSeg = i => setP(prev => {
+              const s = (prev.rentSegments||[]).filter((_,j)=>j!==i);
+              return { ...prev, rentSegments: s.length ? s : [{ amount: 120 }] };
+            });
+            return (
+              <Card color={`${C.green}40`}>
+                <SH title="家賃（期間別・年額）" icon="💴" color={C.green} />
+                <div style={{ fontSize: 11, color: C.muted, marginBottom: 8 }}>「＋期間を追加」で家賃変動を設定できます</div>
+                {segs.map((seg, i) => {
+                  const isLast = i === segs.length - 1;
+                  const prevEnd = i === 0 ? BASE_YEAR - 1 : (segs[i-1].endYear || BASE_YEAR);
+                  const label = isLast
+                    ? `${(segs[i-1]?.endYear ? segs[i-1].endYear + 1 : BASE_YEAR)}年〜`
+                    : `${prevEnd + 1}〜${seg.endYear}年`;
+                  return (
+                    <div key={i} style={{ background: "#F8FAFC", borderRadius: 10, padding: "10px 12px", marginBottom: 8, border: `1px solid ${C.border}` }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                        <span style={{ fontSize: 12, fontWeight: 700, color: C.green }}>期間{i+1}: {label}</span>
+                        {segs.length > 1 && (
+                          <button onClick={()=>removeSeg(i)} style={{ background:"#FEF2F2",border:"none",borderRadius:6,padding:"3px 8px",color:C.red,cursor:"pointer",fontSize:11 }}>削除</button>
+                        )}
+                      </div>
+                      <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
+                        {!isLast && (
+                          <div>
+                            <div style={{ fontSize: 10, color: C.muted, marginBottom: 3 }}>この期間の終わり</div>
+                            <Num value={seg.endYear||BASE_YEAR+4} onChange={v=>updateSeg(i,"endYear",v)} min={BASE_YEAR} max={2060} unit="年まで" color={C.green} width={64} />
+                          </div>
+                        )}
+                        <div>
+                          <div style={{ fontSize: 10, color: C.muted, marginBottom: 3 }}>家賃（年額）</div>
+                          <Num value={seg.amount||0} onChange={v=>updateSeg(i,"amount",v)} min={0} max={360} step={6} unit="万円" color={C.green} width={72} />
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+                <button onClick={addSeg} style={{ width:"100%", padding:"10px", borderRadius:10, border:`2px dashed ${C.green}`, background:"#F0FDF4", color:C.green, fontWeight:700, fontSize:13, cursor:"pointer" }}>
+                  ＋ 期間を追加（家賃変動）
+                </button>
+              </Card>
+            );
+          })()}
 
           <Card>
             <SH title="食費・日用品・光熱費" icon="🛒" color={C.green} />
@@ -690,6 +734,26 @@ export default function LifePlanPro() {
               </div>
             </Card>
 
+            {/* 既に持ち家の場合の物件情報 */}
+            {p.housingType === "own" && houses.length === 0 && (
+              <Card color={`${C.yellow}40`} mb={12}>
+                <SH title="現在の持ち家情報" icon="🏡" color={C.yellow} />
+                <Row label="購入価格（万円）"><Num value={p.propertyInitialValue||0} onChange={set("propertyInitialValue")} min={0} max={20000} step={100} unit="万円" width={80} color={C.yellow} /></Row>
+                <Row label="建築年"><Num value={p.propertyBuildYear||BASE_YEAR} onChange={set("propertyBuildYear")} min={1970} max={BASE_YEAR} unit="年" color={C.yellow} /></Row>
+                <Row label="年間減価率" sub="木造:約2% / RC:約1%"><Num value={p.propertyDepreciationRate||1.5} onChange={set("propertyDepreciationRate")} min={0.5} max={5} step={0.1} unit="%" color={C.yellow} /></Row>
+                <SH title="固定資産税" icon="📋" color={C.orange} />
+                <Row label="固定資産税を計算する"><Toggle value={p.propertyTaxEnabled} onChange={set("propertyTaxEnabled")} color={C.orange} /></Row>
+                {p.propertyTaxEnabled && (
+                  <Row label="実効税率" sub="一般的に購入価格の0.1〜0.2%程度"><Num value={p.propertyTaxRate||0.14} onChange={set("propertyTaxRate")} min={0.05} max={0.5} step={0.01} unit="%" color={C.orange} /></Row>
+                )}
+                {p.propertyInitialValue > 0 && p.propertyTaxEnabled && (
+                  <div style={{ background:"#FFF7ED", borderRadius:8, padding:"8px 10px", marginTop:6, fontSize:11, color:"#92400E" }}>
+                    初年度の固定資産税目安: 約{Math.round(p.propertyInitialValue*(p.propertyTaxRate/100)).toLocaleString()}万円/年
+                  </div>
+                )}
+              </Card>
+            )}
+
             {houses.map((h, i) => {
               const lm = h.loan > 0 ? (h.loan*(h.loanRate/100/12)*Math.pow(1+h.loanRate/100/12,h.loanYears*12))/(Math.pow(1+h.loanRate/100/12,h.loanYears*12)-1) : 0;
               const col = houseColors[i] || C.yellow;
@@ -722,6 +786,17 @@ export default function LifePlanPro() {
                         ))}
                       </div>
                     </Row>
+                    <SH title="固定資産税・不動産評価額" icon="📋" color={C.orange} />
+                    <Row label="固定資産税を計算する"><Toggle value={p.propertyTaxEnabled} onChange={set("propertyTaxEnabled")} color={C.orange} /></Row>
+                    {p.propertyTaxEnabled && (
+                      <Row label="実効税率" sub="一般的に購入価格の0.1〜0.2%程度"><Num value={p.propertyTaxRate||0.14} onChange={set("propertyTaxRate")} min={0.05} max={0.5} step={0.01} unit="%" color={C.orange} /></Row>
+                    )}
+                    <Row label="年間減価率" sub="木造:約2% / RC:約1%"><Num value={p.propertyDepreciationRate||1.5} onChange={set("propertyDepreciationRate")} min={0.5} max={5} step={0.1} unit="%" color={C.orange} /></Row>
+                    {(h.cashPrice+h.loan) > 0 && p.propertyTaxEnabled && (
+                      <div style={{ background:"#FFF7ED", borderRadius:8, padding:"8px 10px", marginTop:6, fontSize:11, color:"#92400E" }}>
+                        初年度の固定資産税目安: 約{Math.round((h.cashPrice+h.loan)*(p.propertyTaxRate/100)).toLocaleString()}万円/年
+                      </div>
+                    )}
                   </>)}
                 </Card>
               );
@@ -736,8 +811,8 @@ export default function LifePlanPro() {
             <div style={{ fontSize: 12, opacity: 0.8 }}>車の買替えや旅行など大きな一時出費を登録します</div>
           </div>
 
-          {/* イベント一覧（発生年でソート） */}
-          {[...(p.events||[])].sort((a,b)=>a.year-b.year).map(ev => (
+          {/* イベント一覧（ID順で表示 ※並び替えはしない） */}
+          {(p.events||[]).map(ev => (
             <div key={ev.id} style={{ background: C.panel, borderRadius: 12, padding: "12px 14px", marginBottom: 8, border: `1px solid ${C.purple}30`, display: "flex", alignItems: "center", gap: 10 }}>
               <span style={{ fontSize: 22, flexShrink: 0 }}>{ev.icon}</span>
               <div style={{ flex: 1 }}>
@@ -818,7 +893,7 @@ export default function LifePlanPro() {
             <ResponsiveContainer width="100%" height={220}>
               <AreaChart data={data} margin={{ top: 14, right: 4, left: -10, bottom: 0 }}>
                 <defs>
-                  {[["gc",C.yellow],["gn",C.green],["gn2","#34D399"],["gs",C.accent],["gs2","#93C5FD"],["gk1","#F59E0B"],["gk2","#FCD34D"]].map(([id,c])=>(
+                  {[["gc",C.yellow],["gn",C.green],["gn2","#34D399"],["gs",C.accent],["gs2","#93C5FD"],["gk1","#F59E0B"],["gk2","#FCD34D"],["gp","#94A3B8"]].map(([id,c])=>(
                     <linearGradient key={id} id={id} x1="0" y1="0" x2="0" y2="1">
                       <stop offset="5%" stopColor={c} stopOpacity={0.7}/>
                       <stop offset="95%" stopColor={c} stopOpacity={0.05}/>
@@ -844,6 +919,7 @@ export default function LifePlanPro() {
                 {p.hasSpouse && <Area type="monotone" dataKey="spouseStockAsset" name="妻証券" stroke="#93C5FD" fill="url(#gs2)" strokeWidth={1.5} dot={false} stackId="a"/>}
                 {p.childCount>0 && <Area type="monotone" dataKey="kid1NisaAsset" name="子1NISA" stroke="#F59E0B" fill="url(#gk1)" strokeWidth={1.5} dot={false} stackId="a"/>}
                 {p.childCount>1 && <Area type="monotone" dataKey="kid2NisaAsset" name="子2NISA" stroke="#FCD34D" fill="url(#gk2)" strokeWidth={1.5} dot={false} stackId="a"/>}
+                {(p.housingType==="own"||(p.houses||[]).length>0) && <Area type="monotone" dataKey="propVal" name="不動産評価額" stroke="#94A3B8" fill="url(#gp)" strokeWidth={1.5} dot={false} stackId="a"/>}
               </AreaChart>
             </ResponsiveContainer>
           </div>
