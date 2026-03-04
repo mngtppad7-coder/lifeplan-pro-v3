@@ -30,6 +30,8 @@ const DEFAULTS = {
   transport: 12, leisure: 30, insurance: 60,
   clothing: 10, medical: 8, other: 20,
   eduNursery: 30, eduElementary: 60, eduJunior: 114, eduHigh: 97, eduCollege: 103,
+  period1End: BASE_YEAR+4,  // 期間1の最終年（〜この年）
+  period2End: BASE_YEAR+9,  // 期間2の最終年（〜この年）
   rent1: 120, rent2: 120, rent3: 0, rentEndYear: BASE_YEAR+10,
   // STEP3: 投資
   myNisaAnnual1: 0, myNisaAnnual2: 0, myNisaAnnual3: 0,
@@ -125,11 +127,11 @@ const SH = ({ title, icon, color }) => (
 );
 
 // 3期間入力グリッド
-const Period3 = ({ keys, values, onChange, max, step = 1, unit = "万" }) => (
+const Period3 = ({ values, onChange, max, step = 1, unit = "万", labels }) => (
   <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, marginTop: 8, marginBottom: 4 }}>
-    {[["〜2030", 0], ["2031〜2035", 1], ["2036〜", 2]].map(([label, i]) => (
+    {labels.map((label, i) => (
       <div key={i}>
-        <div style={{ fontSize: 10, color: C.muted, marginBottom: 4, textAlign: "center" }}>{label}</div>
+        <div style={{ fontSize: 10, color: C.muted, marginBottom: 4, textAlign: "center", lineHeight: 1.3 }}>{label}</div>
         <Num value={values[i]} onChange={v => onChange(i, v)} min={0} max={max} step={step} unit={unit} width={52} />
       </div>
     ))}
@@ -170,7 +172,7 @@ function simulate(p) {
 
     // 住宅
     const bought = (p.houseCashPrice > 0 || p.houseLoan > 0) && yr >= p.houseYear;
-    const per3 = cy < 2031 ? 1 : cy < 2036 ? 2 : 3;
+    const per3 = cy <= p.period1End ? 1 : cy <= p.period2End ? 2 : 3;
     const rentY = bought ? 0 : cy < p.rentEndYear ? (per3===1?p.rent1:per3===2?p.rent2:p.rent3) : 0;
     const cashBuy = p.houseCashPrice > 0 && yr === p.houseYear ? p.houseCashPrice : 0;
     const loanCost = yr>=p.houseYear && yr<p.houseYear+p.loanYears && p.houseLoan>0 ? loanAnnual : 0;
@@ -400,8 +402,23 @@ export default function LifePlanPro() {
 
           <Card color={`${C.accent}40`}>
             <SH title="家賃（期間別・年額）" icon="🏠" color={C.accent} />
-            <div style={{ fontSize: 11, color: C.muted, marginBottom: 4 }}>住宅購入後はSTEP4で設定</div>
-            <Period3 keys={["rent1","rent2","rent3"]} values={[p.rent1,p.rent2,p.rent3]} onChange={(i,v)=>setP3("rent",i,v)} max={360} step={6} />
+            <div style={{ fontSize: 11, color: C.muted, marginBottom: 8 }}>住宅購入後はSTEP4で設定</div>
+            <div style={{ background: "#EFF6FF", borderRadius: 10, padding: "10px 12px", marginBottom: 10 }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: C.accent, marginBottom: 6 }}>📅 期間の区切り年を設定</div>
+              <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontSize: 10, color: C.muted, marginBottom: 3 }}>期間1の終わり</div>
+                  <Num value={p.period1End} onChange={v => setP(prev => ({ ...prev, period1End: Math.min(v, prev.period2End - 1) }))} min={BASE_YEAR} max={2060} unit="年まで" color={C.accent} width={64} />
+                </div>
+                <div style={{ fontSize: 18, color: C.muted }}>→</div>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontSize: 10, color: C.muted, marginBottom: 3 }}>期間2の終わり</div>
+                  <Num value={p.period2End} onChange={v => setP(prev => ({ ...prev, period2End: Math.max(v, prev.period1End + 1) }))} min={BASE_YEAR+1} max={2065} unit="年まで" color={C.accent} width={64} />
+                </div>
+              </div>
+            </div>
+            <Period3 values={[p.rent1,p.rent2,p.rent3]} onChange={(i,v)=>setP3("rent",i,v)} max={360} step={6}
+              labels={[`〜${p.period1End}`, `${p.period1End+1}〜${p.period2End}`, `${p.period2End+1}〜`]} />
             <Row label="家賃終了年" sub="この年以降は0円"><Num value={p.rentEndYear} onChange={set("rentEndYear")} min={BASE_YEAR} max={2060} unit="年" /></Row>
           </Card>
 
@@ -443,6 +460,25 @@ export default function LifePlanPro() {
             </div>
           </div>
 
+          {/* 期間区切り（家賃と共通） */}
+          <div style={{ background: "#EFF6FF", borderRadius: 12, padding: "12px 14px", marginBottom: 12, border: `1px solid ${C.accent}30` }}>
+            <div style={{ fontSize: 12, fontWeight: 700, color: C.accent, marginBottom: 6 }}>📅 投資期間の区切り年（STEP2と共通）</div>
+            <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontSize: 10, color: C.muted, marginBottom: 3 }}>期間1の終わり</div>
+                <Num value={p.period1End} onChange={v => setP(prev => ({ ...prev, period1End: Math.min(v, prev.period2End - 1) }))} min={BASE_YEAR} max={2060} unit="年まで" color={C.accent} width={64} />
+              </div>
+              <div style={{ fontSize: 18, color: C.muted }}>→</div>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontSize: 10, color: C.muted, marginBottom: 3 }}>期間2の終わり</div>
+                <Num value={p.period2End} onChange={v => setP(prev => ({ ...prev, period2End: Math.max(v, prev.period1End + 1) }))} min={BASE_YEAR+1} max={2065} unit="年まで" color={C.accent} width={64} />
+              </div>
+            </div>
+            <div style={{ fontSize: 10, color: C.muted, marginTop: 6 }}>
+              期間1: 〜{p.period1End}年　期間2: {p.period1End+1}〜{p.period2End}年　期間3: {p.period2End+1}年〜
+            </div>
+          </div>
+
           {/* 収支アドバイス */}
           {minusYears.length > 0 && (
             <div style={{ background: "rgba(239,68,68,0.1)", border: `1px solid ${C.red}40`, borderRadius: 12, padding: "12px 14px", marginBottom: 12 }}>
@@ -454,7 +490,7 @@ export default function LifePlanPro() {
           <Card color={`${C.green}40`}>
             <SH title="本人 NISA（年額）" icon="📗" color={C.green} />
             <div style={{ fontSize: 11, color: C.muted, marginBottom: 4 }}>積立＋成長投資枠の合計</div>
-            <Period3 keys={["myNisaAnnual1","myNisaAnnual2","myNisaAnnual3"]} values={[p.myNisaAnnual1,p.myNisaAnnual2,p.myNisaAnnual3]} onChange={(i,v)=>setP3("myNisaAnnual",i,v)} max={360} step={12} />
+            <Period3 values={[p.myNisaAnnual1,p.myNisaAnnual2,p.myNisaAnnual3]} onChange={(i,v)=>setP3("myNisaAnnual",i,v)} max={360} step={12} labels={[`〜${p.period1End}`,`${p.period1End+1}〜${p.period2End}`,`${p.period2End+1}〜`]} />
             <Row label="開始年"><Num value={p.myNisaStart} onChange={set("myNisaStart")} min={2020} max={2060} unit="年" color={C.green} /></Row>
             <Row label="終了年"><Num value={p.myNisaEnd} onChange={set("myNisaEnd")} min={2025} max={2070} unit="年" color={C.green} /></Row>
             <Row label="想定利回り"><Num value={p.myNisaReturn} onChange={set("myNisaReturn")} min={0} max={12} step={0.1} unit="%" color={C.green} /></Row>
@@ -463,7 +499,7 @@ export default function LifePlanPro() {
           {p.hasSpouse && (
             <Card color="#34D39940">
               <SH title="配偶者 NISA（年額）" icon="📗" color="#34D399" />
-              <Period3 keys={["spouseNisaAnnual1","spouseNisaAnnual2","spouseNisaAnnual3"]} values={[p.spouseNisaAnnual1,p.spouseNisaAnnual2,p.spouseNisaAnnual3]} onChange={(i,v)=>setP3("spouseNisaAnnual",i,v)} max={360} step={12} />
+              <Period3 values={[p.spouseNisaAnnual1,p.spouseNisaAnnual2,p.spouseNisaAnnual3]} onChange={(i,v)=>setP3("spouseNisaAnnual",i,v)} max={360} step={12} labels={[`〜${p.period1End}`,`${p.period1End+1}〜${p.period2End}`,`${p.period2End+1}〜`]} />
               <Row label="開始年"><Num value={p.spouseNisaStart} onChange={set("spouseNisaStart")} min={2020} max={2060} unit="年" color="#34D399" /></Row>
               <Row label="終了年"><Num value={p.spouseNisaEnd} onChange={set("spouseNisaEnd")} min={2025} max={2070} unit="年" color="#34D399" /></Row>
               <Row label="想定利回り"><Num value={p.spouseNisaReturn} onChange={set("spouseNisaReturn")} min={0} max={12} step={0.1} unit="%" color="#34D399" /></Row>
@@ -473,7 +509,7 @@ export default function LifePlanPro() {
           <Card color={`${C.accent}40`}>
             <SH title="本人 証券口座（年額）" icon="📈" color={C.accent} />
             <div style={{ fontSize: 11, color: C.muted, marginBottom: 4 }}>NISA満額後の特定口座・ETF等</div>
-            <Period3 keys={["myStockAnnual1","myStockAnnual2","myStockAnnual3"]} values={[p.myStockAnnual1,p.myStockAnnual2,p.myStockAnnual3]} onChange={(i,v)=>setP3("myStockAnnual",i,v)} max={600} step={12} />
+            <Period3 values={[p.myStockAnnual1,p.myStockAnnual2,p.myStockAnnual3]} onChange={(i,v)=>setP3("myStockAnnual",i,v)} max={600} step={12} labels={[`〜${p.period1End}`,`${p.period1End+1}〜${p.period2End}`,`${p.period2End+1}〜`]} />
             <Row label="開始年"><Num value={p.myStockStart} onChange={set("myStockStart")} min={2020} max={2060} unit="年" /></Row>
             <Row label="終了年"><Num value={p.myStockEnd} onChange={set("myStockEnd")} min={2025} max={2070} unit="年" /></Row>
             <Row label="想定利回り"><Num value={p.myStockReturn} onChange={set("myStockReturn")} min={0} max={15} step={0.1} unit="%" /></Row>
@@ -482,7 +518,7 @@ export default function LifePlanPro() {
           {p.hasSpouse && (
             <Card color="#93C5FD40">
               <SH title="配偶者 証券口座（年額）" icon="📈" color="#93C5FD" />
-              <Period3 keys={["spouseStockAnnual1","spouseStockAnnual2","spouseStockAnnual3"]} values={[p.spouseStockAnnual1,p.spouseStockAnnual2,p.spouseStockAnnual3]} onChange={(i,v)=>setP3("spouseStockAnnual",i,v)} max={600} step={12} />
+              <Period3 values={[p.spouseStockAnnual1,p.spouseStockAnnual2,p.spouseStockAnnual3]} onChange={(i,v)=>setP3("spouseStockAnnual",i,v)} max={600} step={12} labels={[`〜${p.period1End}`,`${p.period1End+1}〜${p.period2End}`,`${p.period2End+1}〜`]} />
               <Row label="開始年"><Num value={p.spouseStockStart} onChange={set("spouseStockStart")} min={2020} max={2060} unit="年" color="#93C5FD" /></Row>
               <Row label="終了年"><Num value={p.spouseStockEnd} onChange={set("spouseStockEnd")} min={2025} max={2070} unit="年" color="#93C5FD" /></Row>
               <Row label="想定利回り"><Num value={p.spouseStockReturn} onChange={set("spouseStockReturn")} min={0} max={15} step={0.1} unit="%" color="#93C5FD" /></Row>
