@@ -453,18 +453,9 @@ export default function LifePlanPro() {
       const hash=window.location.hash.slice(1);
       if(hash){
         try{
-          // URL-safe base64 → standard base64
-          const b64=hash.replace(/-/g,"+").replace(/_/g,"/");
-          const padded=b64+("===".slice((b64.length%4)||4));
-          const bin=atob(padded);
-          const bytes=new Uint8Array(bin.length);
-          for(let i=0;i<bin.length;i++) bytes[i]=bin.charCodeAt(i);
-          const json=new TextDecoder().decode(bytes);
-          const d=JSON.parse(json);
+          const d=JSON.parse(decodeURIComponent(hash));
           return{...DEFAULTS,...d};
-        }catch(e2){
-          try{ const d=JSON.parse(decodeURIComponent(atob(hash))); return{...DEFAULTS,...d}; }catch(e3){}
-        }
+        }catch(e2){}
       }
       const saved=localStorage.getItem("lifeplan_pro_v5");
       if(saved) return{...DEFAULTS,...JSON.parse(saved)};
@@ -482,21 +473,18 @@ export default function LifePlanPro() {
   const [shareUrl,setShareUrl]=useState(null);
   const share=()=>{
     try{
-      const json=JSON.stringify(p);
-      const bytes=new TextEncoder().encode(json);
-      let bin="";
-      bytes.forEach(b=>bin+=String.fromCharCode(b));
-      const b64=btoa(bin);
-      // btoa出力はASCIIのみなのでURLセーフに変換
-      const b64url=b64.replace(/\+/g,"-").replace(/\//g,"_").replace(/=/g,"");
-      const url=`${location.origin}${location.pathname}#${b64url}`;
+      // encodeURIComponentで安全にエンコード（日本語含むJSONも確実に動く）
+      const encoded=encodeURIComponent(JSON.stringify(p));
+      const url=`${location.origin}${location.pathname}#${encoded}`;
       setShareUrl(url);
       if(navigator.clipboard?.writeText){
-        navigator.clipboard.writeText(url).then(()=>{setNotice("shared");}).catch(()=>{setNotice("shared");});
+        navigator.clipboard.writeText(url)
+          .then(()=>{setNotice("shared");setTimeout(()=>setNotice(null),5000);})
+          .catch(()=>{setNotice("shared");setTimeout(()=>setNotice(null),5000);});
       } else {
         setNotice("shared");
+        setTimeout(()=>setNotice(null),5000);
       }
-      setTimeout(()=>{setNotice(null);},4000);
     }catch(e){setNotice("error");setTimeout(()=>setNotice(null),2500);}
   };
 
