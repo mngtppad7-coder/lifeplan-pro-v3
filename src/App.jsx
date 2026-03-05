@@ -1,4 +1,5 @@
 import { useState, useMemo, useCallback } from "react";
+import * as XLSX from "xlsx";
 import { AreaChart, Area, BarChart, Bar, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ReferenceLine, ResponsiveContainer } from "recharts";
 
 // ── カラーパレット ────────────────────────────────────────────────
@@ -156,21 +157,21 @@ function simulate(p) {
     const eduCost=children.reduce((s,c)=>s+edu(c.age),0);
 
     // 投資（自由セグメント）
-    const inNisa=!bothRetired&&cy>=p.myNisaStart&&cy<=p.myNisaEnd;
-    const myNisaTsumiC=inNisa&&myNisaTsumiTotal<NISA_TSUMI_LIMIT?Math.min(getSegAnnual(p.myNisaTsumiSegs,cy),NISA_TSUMI_LIMIT-myNisaTsumiTotal):0;
-    const myNisaGrowthC=inNisa&&myNisaGrowthTotal<NISA_GROWTH_LIMIT?Math.min(getSegAnnual(p.myNisaGrowthSegs,cy),NISA_GROWTH_LIMIT-myNisaGrowthTotal):0;
-    const inSpNisa=p.hasSpouse&&!bothRetired&&cy>=p.spouseNisaStart&&cy<=p.spouseNisaEnd;
-    const spNisaTsumiC=inSpNisa&&spNisaTsumiTotal<NISA_TSUMI_LIMIT?Math.min(getSegAnnual(p.spouseNisaTsumiSegs,cy),NISA_TSUMI_LIMIT-spNisaTsumiTotal):0;
-    const spNisaGrowthC=inSpNisa&&spNisaGrowthTotal<NISA_GROWTH_LIMIT?Math.min(getSegAnnual(p.spouseNisaGrowthSegs,cy),NISA_GROWTH_LIMIT-spNisaGrowthTotal):0;
+    // NISA: 退職前かつ生涯上限未達の間だけ積立（開始/終了年設定不要）
+    const myNisaTsumiC=!myRetired&&myNisaTsumiTotal<NISA_TSUMI_LIMIT?Math.min(getSegAnnual(p.myNisaTsumiSegs,cy),NISA_TSUMI_LIMIT-myNisaTsumiTotal):0;
+    const myNisaGrowthC=!myRetired&&myNisaGrowthTotal<NISA_GROWTH_LIMIT?Math.min(getSegAnnual(p.myNisaGrowthSegs,cy),NISA_GROWTH_LIMIT-myNisaGrowthTotal):0;
+    const spNisaTsumiC=p.hasSpouse&&!spRetired&&spNisaTsumiTotal<NISA_TSUMI_LIMIT?Math.min(getSegAnnual(p.spouseNisaTsumiSegs,cy),NISA_TSUMI_LIMIT-spNisaTsumiTotal):0;
+    const spNisaGrowthC=p.hasSpouse&&!spRetired&&spNisaGrowthTotal<NISA_GROWTH_LIMIT?Math.min(getSegAnnual(p.spouseNisaGrowthSegs,cy),NISA_GROWTH_LIMIT-spNisaGrowthTotal):0;
     const myStockC=!bothRetired&&cy>=p.myStockStart&&cy<=p.myStockEnd?getSegAnnual(p.myStockSegs,cy):0;
     const spStockC=p.hasSpouse&&!bothRetired&&cy>=p.spouseStockStart&&cy<=p.spouseStockEnd?getSegAnnual(p.spouseStockSegs,cy):0;
     myNisaTsumiTotal+=myNisaTsumiC; myNisaGrowthTotal+=myNisaGrowthC;
     spNisaTsumiTotal+=spNisaTsumiC; spNisaGrowthTotal+=spNisaGrowthC;
     const investTotal=myNisaTsumiC+myNisaGrowthC+spNisaTsumiC+spNisaGrowthC+myStockC+spStockC;
 
-    // 車・定期
-    const carMaintCost=p.hasCarMaint?(p.carGasoline||6)+(p.carTax||4)+(p.carInsurance||6):0;
-    const recurringCost=(p.recurringEvents||[]).filter(ev=>ev.startYear<=yr&&(yr-ev.startYear)%ev.intervalYears===0).reduce((s,ev)=>s+ev.amount,0);
+    // 車・定期（carEndAge以降は発生しない）
+    const carActive=p.hasCarMaint&&(!p.carEndAge||age<p.carEndAge);
+    const carMaintCost=carActive?(p.carGasoline||6)+(p.carTax||4)+(p.carInsurance||6):0;
+    const recurringCost=carActive?(p.recurringEvents||[]).filter(ev=>ev.startYear<=yr&&(yr-ev.startYear)%ev.intervalYears===0).reduce((s,ev)=>s+ev.amount,0):0;
     const eventCost=(p.events||[]).filter(ev=>ev.year===yr).reduce((s,ev)=>s+ev.amount,0);
 
     const totalCost=annualLiving+rentY+loanCost+ownCost+eduCost+p.insurance+investTotal+carMaintCost+recurringCost;
@@ -221,11 +222,9 @@ function simulate(p) {
   return rows;
 }
 
-// ── Excel出力（SheetJS使用・2シート） ──────────────────────────────
+// ── Excel出力（xlsx npm bundle・2シート） ──────────────────────
 function exportExcel(p, data) {
   try {
-    const XLSX = window.XLSX;
-    if (!XLSX) { alert("SheetJSが読み込まれていません"); return; }
     const wb = XLSX.utils.book_new();
 
     // ── Sheet1: サマリー ──
@@ -420,7 +419,21 @@ export default function LifePlanPro() {
   const [p,setP]=useState(()=>{
     try{
       const hash=window.location.hash.slice(1);
-      if(hash){const d=JSON.parse(decodeURIComponent(escape(atob(hash))));return{...DEFAULTS,...d};}
+      if(hash){
+        try{
+          // URL-safe base64 → standard base64
+          const b64=hash.replace(/-/g,"+").replace(/_/g,"/");
+          const padded=b64+("===".slice((b64.length%4)||4));
+          const bin=atob(padded);
+          const bytes=new Uint8Array(bin.length);
+          for(let i=0;i<bin.length;i++) bytes[i]=bin.charCodeAt(i);
+          const json=new TextDecoder().decode(bytes);
+          const d=JSON.parse(json);
+          return{...DEFAULTS,...d};
+        }catch(e2){
+          try{ const d=JSON.parse(decodeURIComponent(atob(hash))); return{...DEFAULTS,...d}; }catch(e3){}
+        }
+      }
       const saved=localStorage.getItem("lifeplan_pro_v5");
       if(saved) return{...DEFAULTS,...JSON.parse(saved)};
     }catch(e){}
@@ -434,13 +447,25 @@ export default function LifePlanPro() {
   const save=()=>{try{localStorage.setItem("lifeplan_pro_v5",JSON.stringify(p));setNotice("saved");setTimeout(()=>setNotice(null),2500);}catch(e){}};
 
   // ⑨ URLハッシュ共有（全データをbase64エンコード）
+  const [shareUrl,setShareUrl]=useState(null);
   const share=()=>{
     try{
       const json=JSON.stringify(p);
-      const b64=btoa(unescape(encodeURIComponent(json)));
-      const url=`${location.origin}${location.pathname}#${b64}`;
-      navigator.clipboard?.writeText(url).then(()=>{setNotice("shared");setTimeout(()=>setNotice(null),3000);});
-    }catch(e){setNotice("error");setTimeout(()=>setNotice(null),2000);}
+      const bytes=new TextEncoder().encode(json);
+      let bin="";
+      bytes.forEach(b=>bin+=String.fromCharCode(b));
+      const b64=btoa(bin);
+      // btoa出力はASCIIのみなのでURLセーフに変換
+      const b64url=b64.replace(/\+/g,"-").replace(/\//g,"_").replace(/=/g,"");
+      const url=`${location.origin}${location.pathname}#${b64url}`;
+      setShareUrl(url);
+      if(navigator.clipboard?.writeText){
+        navigator.clipboard.writeText(url).then(()=>{setNotice("shared");}).catch(()=>{setNotice("shared");});
+      } else {
+        setNotice("shared");
+      }
+      setTimeout(()=>{setNotice(null);},4000);
+    }catch(e){setNotice("error");setTimeout(()=>setNotice(null),2500);}
   };
 
   const data=useMemo(()=>simulate(p),[p]);
@@ -458,10 +483,10 @@ export default function LifePlanPro() {
   )/12);
 
   // NISA満額達成年
-  const myTsumiFullYear=calcNisaFillYear(p.myNisaTsumiSegs,p.myNisaStart||BASE_YEAR,NISA_TSUMI_LIMIT-(p.myNisaTsumiBalance||0));
-  const myGrowthFullYear=calcNisaFillYear(p.myNisaGrowthSegs,p.myNisaStart||BASE_YEAR,NISA_GROWTH_LIMIT-(p.myNisaGrowthBalance||0));
-  const spTsumiFullYear=p.hasSpouse?calcNisaFillYear(p.spouseNisaTsumiSegs,p.spouseNisaStart||BASE_YEAR,NISA_TSUMI_LIMIT-(p.spouseNisaTsumiBalance||0)):null;
-  const spGrowthFullYear=p.hasSpouse?calcNisaFillYear(p.spouseNisaGrowthSegs,p.spouseNisaStart||BASE_YEAR,NISA_GROWTH_LIMIT-(p.spouseNisaGrowthBalance||0)):null;
+  const myTsumiFullYear=calcNisaFillYear(p.myNisaTsumiSegs,BASE_YEAR,NISA_TSUMI_LIMIT-(p.myNisaTsumiBalance||0));
+  const myGrowthFullYear=calcNisaFillYear(p.myNisaGrowthSegs,BASE_YEAR,NISA_GROWTH_LIMIT-(p.myNisaGrowthBalance||0));
+  const spTsumiFullYear=p.hasSpouse?calcNisaFillYear(p.spouseNisaTsumiSegs,BASE_YEAR,NISA_TSUMI_LIMIT-(p.spouseNisaTsumiBalance||0)):null;
+  const spGrowthFullYear=p.hasSpouse?calcNisaFillYear(p.spouseNisaGrowthSegs,BASE_YEAR,NISA_GROWTH_LIMIT-(p.spouseNisaGrowthBalance||0)):null;
 
   const DualTick=({x,y,payload})=>(
     <g transform={`translate(${x},${y})`}>
@@ -501,8 +526,13 @@ export default function LifePlanPro() {
             </div>
           </div>
           {notice&&(
-            <div style={{background:notice==="saved"?"#065F46":notice==="shared"?"#1E3A5F":"#7F1D1D",borderRadius:8,padding:"6px 12px",fontSize:12,color:"#fff",fontWeight:700,textAlign:"center",marginBottom:8}}>
-              {notice==="saved"?"✅ 保存しました":notice==="shared"?"✅ 共有リンクをコピーしました（URLを送ると同じデータが開けます）":"❌ コピーに失敗しました"}
+            <div style={{background:notice==="saved"?"#065F46":"#1E3A5F",borderRadius:8,padding:"6px 12px",fontSize:12,color:"#fff",fontWeight:700,textAlign:"center",marginBottom:4}}>
+              {notice==="saved"?"✅ 保存しました":"✅ 共有URL（タップしてコピー）"}
+            </div>
+          )}
+          {notice==="shared"&&shareUrl&&(
+            <div onClick={()=>{navigator.clipboard?.writeText(shareUrl);}} style={{background:"#0F172A",borderRadius:8,padding:"6px 10px",fontSize:9,color:"#93C5FD",marginBottom:8,wordBreak:"break-all",cursor:"pointer",border:"1px solid #1E3A5F"}}>
+              {shareUrl}
             </div>
           )}
           <div style={{display:"flex"}}>
@@ -662,7 +692,13 @@ export default function LifePlanPro() {
               <Row label="車を保有している"><Toggle value={p.hasCarMaint} onChange={set("hasCarMaint")} color={C.orange}/></Row>
               {p.hasCarMaint&&(
                 <div>
-                  <Row label="ガソリン代（年額）"><Num value={p.carGasoline} onChange={set("carGasoline")} min={0} max={60} step={1} unit="万円" width={72} color={C.orange}/></Row>
+                  <Row label="車をやめる年齢" sub="設定しない場合は生涯発生">
+                <div style={{display:"flex",alignItems:"center",gap:8}}>
+                  <Toggle value={!!p.carEndAge} onChange={v=>setP(prev=>({...prev,carEndAge:v?(prev.myAge+20):null}))} color={C.orange}/>
+                  {!!p.carEndAge&&<Num value={p.carEndAge} onChange={set("carEndAge")} min={p.myAge+1} max={100} unit="歳から不要" color={C.orange} width={52}/>}
+                </div>
+              </Row>
+              <Row label="ガソリン代（年額）"><Num value={p.carGasoline} onChange={set("carGasoline")} min={0} max={60} step={1} unit="万円" width={72} color={C.orange}/></Row>
                   <Row label="自動車税（年額）"><Num value={p.carTax} onChange={set("carTax")} min={0} max={20} step={1} unit="万円" width={72} color={C.orange}/></Row>
                   <Row label="任意保険（年額）"><Num value={p.carInsurance} onChange={set("carInsurance")} min={0} max={30} step={1} unit="万円" width={72} color={C.orange}/></Row>
                   <div style={{background:"#FFF7ED",borderRadius:8,padding:"8px 10px",marginTop:6,marginBottom:12,fontSize:11,color:"#92400E"}}>毎年の車維持費: {(p.carGasoline+p.carTax+p.carInsurance).toLocaleString()}万円/年</div>
@@ -719,8 +755,6 @@ export default function LifePlanPro() {
             <Card color={C.green+"40"}>
               <SH title="本人 NISA" icon="📗" color={C.green}/>
               <div style={{background:"#F0FDF4",borderRadius:8,padding:"8px 10px",marginBottom:8,fontSize:11,color:C.green}}>💡 年間上限360万円（積立120万＋成長240万）/ 生涯上限 積立600万・成長1,200万</div>
-              <Row label="NISA開始年"><Num value={p.myNisaStart} onChange={set("myNisaStart")} min={2020} max={2060} unit="年" color={C.green}/></Row>
-              <Row label="NISA終了年"><Num value={p.myNisaEnd} onChange={set("myNisaEnd")} min={2025} max={2070} unit="年" color={C.green}/></Row>
               <div style={{marginTop:8}}>
                 <div style={{fontSize:12,fontWeight:700,color:C.green,marginBottom:4}}>📌 積立投資枠（上限120万/年）</div>
                 <SegEditor segs={p.myNisaTsumiSegs||[{endYear:null,annual:60}]} onChange={v=>set("myNisaTsumiSegs")(v)} max={120} step={6} color={C.green} label="積立枠"/>
@@ -738,8 +772,6 @@ export default function LifePlanPro() {
             {p.hasSpouse&&(
               <Card color="#34D39940">
                 <SH title="配偶者 NISA" icon="📗" color="#34D399"/>
-                <Row label="NISA開始年"><Num value={p.spouseNisaStart} onChange={set("spouseNisaStart")} min={2020} max={2060} unit="年" color="#34D399"/></Row>
-                <Row label="NISA終了年"><Num value={p.spouseNisaEnd} onChange={set("spouseNisaEnd")} min={2025} max={2070} unit="年" color="#34D399"/></Row>
                 <div style={{marginTop:8}}>
                   <div style={{fontSize:12,fontWeight:700,color:"#34D399",marginBottom:4}}>積立投資枠（上限120万/年）</div>
                   <SegEditor segs={p.spouseNisaTsumiSegs||[{endYear:null,annual:0}]} onChange={v=>set("spouseNisaTsumiSegs")(v)} max={120} step={6} color="#34D399" label="積立枠"/>
