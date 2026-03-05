@@ -3,14 +3,6 @@ import react from "@vitejs/plugin-react"
 import { VitePWA } from "vite-plugin-pwa"
 
 export default defineConfig({
-  optimizeDeps: {
-    include: ["xlsx"],
-  },
-  build: {
-    commonjsOptions: {
-      include: [/xlsx/, /node_modules/],
-    },
-  },
   plugins: [
     react(),
     VitePWA({
