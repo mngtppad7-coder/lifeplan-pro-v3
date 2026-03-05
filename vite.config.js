@@ -3,14 +3,22 @@ import react from "@vitejs/plugin-react"
 import { VitePWA } from "vite-plugin-pwa"
 
 export default defineConfig({
+  optimizeDeps: {
+    include: ["xlsx"],
+  },
+  build: {
+    commonjsOptions: {
+      include: [/xlsx/, /node_modules/],
+    },
+  },
   plugins: [
     react(),
     VitePWA({
       registerType: "autoUpdate",
       manifest: {
-        name: "ライフプランPro v3.0",
+        name: "ライフプランPro v5.0",
         short_name: "ライフプランPro",
-        description: "家族のライフプランをシミュレーション（便利版）",
+        description: "家族のライフプランをシミュレーション",
         theme_color: "#1A2332",
         background_color: "#1A2332",
         display: "standalone",
