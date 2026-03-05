@@ -1,5 +1,4 @@
 import { useState, useMemo } from "react";
-import * as XLSX from "xlsx";
 import { AreaChart, Area, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ReferenceLine, ResponsiveContainer } from "recharts";
 
 // ── カラーパレット ────────────────────────────────────────────────
@@ -222,57 +221,90 @@ function simulate(p) {
   return rows;
 }
 
-// ── Excel出力（xlsx npm bundle・2シート） ──────────────────────
+// ── Excel出力（依存ライブラリなし・SpreadsheetML XML形式） ──────
 function exportExcel(p, data) {
   try {
-    const wb = XLSX.utils.book_new();
+    const esc = s => String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+    const cell = (v, bold=false) => {
+      const isNum = typeof v === "number";
+      const style = bold ? ' ss:StyleID="bold"' : '';
+      return isNum
+        ? `<Cell${style}><Data ss:Type="Number">${v}</Data></Cell>`
+        : `<Cell${style}><Data ss:Type="String">${esc(v)}</Data></Cell>`;
+    };
+    const row = (cells) => `<Row>${cells.join("")}</Row>`;
+    const sheet = (name, rows) =>
+      `<Worksheet ss:Name="${esc(name)}"><Table>${rows.join("")}</Table></Worksheet>`;
 
-    // ── Sheet1: サマリー ──
+    // Sheet1: サマリー
     const retireRow=data.find(d=>d.age===p.myRetireAge)||data[data.length-1];
     const finalRow=data[data.length-1];
     const crossZero=data.find(d=>d.total<0);
     const peakRow=data.reduce((a,b)=>b.total>a.total?b:a,data[0]);
-    const summaryData=[
-      ["ライフプランPro - サマリー",""],["",""],
-      ["■ プロフィール",""],
-      ["本人年齢",`${p.myAge}歳`],["本人手取り年収",`${p.myTakeHome}万円`],
-      ["退職予定年齢",`${p.myRetireAge}歳`],["想定年金",`${p.myPension}万円`],
-      ["想定寿命",`${p.lifeExpectancy}歳`],
-      ...(p.hasSpouse?[["配偶者年齢",`${p.spouseAge}歳`],["配偶者手取り年収",`${p.spouseTakeHome}万円`]]:
-        [["配偶者","なし"]]),
-      ["子ども数",`${p.childCount}人`],
-      ["",""],["■ 資産サマリー",""],
-      ["退職時総資産",`${Math.round(retireRow.total).toLocaleString()}万円`],
-      ["資産ピーク",`${Math.round(peakRow.total).toLocaleString()}万円（${peakRow.age}歳時）`],
-      [crossZero?"資産枯渇年齢":"最終資産（寿命時）",crossZero?`${crossZero.age}歳`:`${Math.round(finalRow.total).toLocaleString()}万円`],
-      ["",""],["■ 主な支出（現在）",""],
-      ["家賃/ローン",`${Math.round((data[0]?.livingCost||0))}万円/年`],
-      ["生活費合計",`${p.food+p.daily+p.utility+p.comm+p.transport+p.leisure+p.clothing+p.medical+p.other}万円/年`],
-      ["保険料",`${p.insurance}万円/年`],
-      ["",""],["■ 投資（現在）",""],
-      ["NISA積立枠",`${getSegAnnual(p.myNisaTsumiSegs,BASE_YEAR)}万円/年`],
-      ["NISA成長枠",`${getSegAnnual(p.myNisaGrowthSegs,BASE_YEAR)}万円/年`],
-      ["証券口座",`${getSegAnnual(p.myStockSegs,BASE_YEAR)}万円/年`],
+    const summaryRows = [
+      row([cell("ライフプランPro - サマリー",true), cell("")]),
+      row([cell(""),cell("")]),
+      row([cell("■ プロフィール",true),cell("")]),
+      row([cell("本人年齢"), cell(`${p.myAge}歳`)]),
+      row([cell("本人手取り年収"), cell(`${p.myTakeHome}万円`)]),
+      row([cell("退職予定年齢"), cell(`${p.myRetireAge}歳`)]),
+      row([cell("想定年金"), cell(`${p.myPension}万円`)]),
+      row([cell("想定寿命"), cell(`${p.lifeExpectancy}歳`)]),
+      ...(p.hasSpouse
+        ? [row([cell("配偶者年齢"),cell(`${p.spouseAge}歳`)]),row([cell("配偶者手取り年収"),cell(`${p.spouseTakeHome}万円`)])]
+        : [row([cell("配偶者"),cell("なし")])]),
+      row([cell("子ども数"), cell(`${p.childCount}人`)]),
+      row([cell(""),cell("")]),
+      row([cell("■ 資産サマリー",true),cell("")]),
+      row([cell("退職時総資産"), cell(`${Math.round(retireRow.total).toLocaleString()}万円`)]),
+      row([cell("資産ピーク"), cell(`${Math.round(peakRow.total).toLocaleString()}万円（${peakRow.age}歳時）`)]),
+      row([cell(crossZero?"資産枯渇年齢":"最終資産（寿命時）"), cell(crossZero?`${crossZero.age}歳`:`${Math.round(finalRow.total).toLocaleString()}万円`)]),
+      row([cell(""),cell("")]),
+      row([cell("■ 主な支出（現在）",true),cell("")]),
+      row([cell("家賃/ローン"), cell(`${Math.round(data[0]?.livingCost||0)}万円/年`)]),
+      row([cell("生活費合計"), cell(`${p.food+p.daily+p.utility+p.comm+p.transport+p.leisure+p.clothing+p.medical+p.other}万円/年`)]),
+      row([cell("保険料"), cell(`${p.insurance}万円/年`)]),
+      row([cell(""),cell("")]),
+      row([cell("■ 投資（現在）",true),cell("")]),
+      row([cell("NISA積立枠"), cell(`${getSegAnnual(p.myNisaTsumiSegs,BASE_YEAR)}万円/年`)]),
+      row([cell("NISA成長枠"), cell(`${getSegAnnual(p.myNisaGrowthSegs,BASE_YEAR)}万円/年`)]),
+      row([cell("証券口座"), cell(`${getSegAnnual(p.myStockSegs,BASE_YEAR)}万円/年`)]),
     ];
-    const ws1=XLSX.utils.aoa_to_sheet(summaryData);
-    ws1["!cols"]=[{wch:28},{wch:22}];
-    XLSX.utils.book_append_sheet(wb,ws1,"サマリー");
 
-    // ── Sheet2: 年次内訳 ──
+    // Sheet2: 年次内訳
     const headers=["西暦","本人歳","収入（万）","生活費（万）","住居費（万）","教育費（万）",
       "投資（万）","車・定期（万）","一時出費（万）","収支（万）","総資産（万）",
       "現金（万）","NISA積立（万）","NISA成長（万）","証券（万）","不動産評価（万）"];
-    const rows2=data.map(d=>[
-      d.year,d.age,d.income,d.livingCost,d.ownCost,d.eduCost,
-      d.invest,d.carCost,d.eventCost,d.cashFlow,d.total,
-      d.cashAsset,d.myNisaTsumiAsset+d.spNisaTsumiAsset,d.myNisaGrowthAsset+d.spNisaGrowthAsset,
-      d.myStockAsset+d.spStockAsset,d.propVal
-    ]);
-    const ws2=XLSX.utils.aoa_to_sheet([headers,...rows2]);
-    ws2["!cols"]=headers.map(()=>({wch:16}));
-    XLSX.utils.book_append_sheet(wb,ws2,"年次内訳");
+    const detailRows = [
+      row(headers.map(h=>cell(h,true))),
+      ...data.map(d=>row([
+        d.year,d.age,d.income,d.livingCost,d.ownCost,d.eduCost,
+        d.invest,d.carCost,d.eventCost,d.cashFlow,d.total,
+        d.cashAsset,
+        (d.myNisaTsumiAsset||0)+(d.spNisaTsumiAsset||0),
+        (d.myNisaGrowthAsset||0)+(d.spNisaGrowthAsset||0),
+        (d.myStockAsset||0)+(d.spStockAsset||0),
+        d.propVal
+      ].map(v=>cell(v))))
+    ];
 
-    XLSX.writeFile(wb,"lifeplan_report.xlsx");
+    const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<?mso-application progid="Excel.Sheet"?>
+<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet"
+ xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet">
+<Styles>
+  <Style ss:ID="bold"><Font ss:Bold="1"/></Style>
+</Styles>
+${sheet("サマリー", summaryRows)}
+${sheet("年次内訳", detailRows)}
+</Workbook>`;
+
+    const blob = new Blob([xml], {type:"application/vnd.ms-excel;charset=utf-8"});
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "lifeplan_report.xls";
+    a.click();
+    URL.revokeObjectURL(a.href);
   } catch(e) { alert("Excel出力に失敗しました: "+e.message); }
 }
 
